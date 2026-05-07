@@ -256,6 +256,14 @@ const WIND_LEVELS = [
   { label: "Extreme (35–60+ mph)", mph: 50, spreadMult: 9.0,  ember: 0.80 },
 ];
 
+// Continuous wind profile from any mph — used by the wind-sweep chart.
+// Spread multiplier and ember activity scale roughly cubically with wind.
+function windAt(mph) {
+  const spreadMult = 1 + Math.pow(mph / 12, 1.7);   // ≈1 at 0, ~9 at 50
+  const ember = Math.min(0.9, Math.pow(mph / 55, 1.4));
+  return { mph, spreadMult, ember, label: `${mph} mph` };
+}
+
 // Average travel speeds (km/min)
 const SPEED = {
   firedome: 0,
@@ -267,9 +275,9 @@ const SPEED = {
 // Average loss per hectare burned in a WUI corridor (structures + suppression damages)
 const LOSS_PER_HECTARE = 850_000;
 
-function simulate({ asset, units, windIdx, fuelMoisture, ignitionDistanceKm, structuresAtRisk, settingKey, firedomeCoveragePct }) {
+function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionDistanceKm, structuresAtRisk, settingKey, firedomeCoveragePct }) {
   const a = ASSETS[asset];
-  const wind = WIND_LEVELS[windIdx];
+  const wind = windOverride || WIND_LEVELS[windIdx];
   const setting = SETTINGS[settingKey];
 
   // Wind ceiling: above asset's ceiling, suppression is zero (grounded).
@@ -636,6 +644,54 @@ function FirefightingSim() {
     }, null);
   }, [results]);
 
+  // Wind sweep — re-run simulate at every wind speed from 0 to 60 mph in 2 mph steps
+  // to surface where each asset's cost curve breaks.
+  const windSweep = useMemo(() => {
+    const points = [];
+    for (let mph = 0; mph <= 60; mph += 2) {
+      const wind = windAt(mph);
+      const row = { mph };
+      for (const key of Object.keys(ASSETS)) {
+        const resolvedUnits = key === "firedome"
+          ? { onSite: firedomeUnitsNeeded, regional: units.firedome.regional }
+          : units[key];
+        const r = simulate({
+          asset: key,
+          units: resolvedUnits,
+          windOverride: wind,
+          fuelMoisture,
+          ignitionDistanceKm: ignitionDist,
+          structuresAtRisk,
+          settingKey,
+          firedomeCoveragePct: key === "firedome" ? units.firedome.onSiteCoveragePct : undefined,
+        });
+        row[key] = Math.round(r.totalSeasonCost / 100_000) * 100_000;  // round for cleaner chart
+      }
+      points.push(row);
+    }
+    return points;
+  }, [units, firedomeUnitsNeeded, fuelMoisture, ignitionDist, structuresAtRisk, settingKey]);
+
+  // Side-by-side: same config, calm vs extreme wind
+  const calmVsExtreme = useMemo(() => {
+    const out = {};
+    for (const key of Object.keys(ASSETS)) {
+      const resolvedUnits = key === "firedome"
+        ? { onSite: firedomeUnitsNeeded, regional: units.firedome.regional }
+        : units[key];
+      const baseArgs = {
+        asset: key, units: resolvedUnits, fuelMoisture,
+        ignitionDistanceKm: ignitionDist, structuresAtRisk, settingKey,
+        firedomeCoveragePct: key === "firedome" ? units.firedome.onSiteCoveragePct : undefined,
+      };
+      out[key] = {
+        calm:    simulate({ ...baseArgs, windOverride: windAt(5) }),
+        extreme: simulate({ ...baseArgs, windOverride: windAt(50) }),
+      };
+    }
+    return out;
+  }, [units, firedomeUnitsNeeded, fuelMoisture, ignitionDist, structuresAtRisk, settingKey]);
+
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)", padding: "16px 4px", maxWidth: 1100, margin: "0 auto" }}>
       <h1 style={{ fontSize: 22, fontWeight: 500, margin: "0 0 4px" }}>Firefighting approaches at the wildland–urban interface</h1>
@@ -894,8 +950,91 @@ function FirefightingSim() {
             </div>
           </div>
 
+          {/* High-wind partnership callout */}
+          <div style={{
+            background: "#FCEBEB",
+            border: "0.5px solid #F09595",
+            borderRadius: "var(--border-radius-lg)",
+            padding: "12px 16px",
+            marginTop: 16,
+            display: "flex",
+            gap: 16,
+            alignItems: "center",
+          }}>
+            <div style={{ fontSize: 24 }}>⚠️</div>
+            <div style={{ flex: 1, fontSize: 12, color: "#501313", lineHeight: 1.5 }}>
+              <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 2 }}>
+                Above 30 mph wind, only Firedome and ground crews work
+              </div>
+              Aircraft and drones are grounded — their season lease is paid in full but they contribute zero suppression. The defensive line is reduced to fixed perimeter systems plus engines, which is exactly when most catastrophic WUI events happen (Camp, Tubbs, Marshall, Lahaina, Eaton, Palisades).
+            </div>
+          </div>
+
+          {/* Calm vs Extreme side-by-side */}
+          <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "12px 14px", marginTop: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>Same config under calm vs extreme wind</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+              {Object.entries(ASSETS).map(([key, a]) => {
+                const cve = calmVsExtreme[key];
+                const calmCost = cve.calm.totalSeasonCost;
+                const extremeCost = cve.extreme.totalSeasonCost;
+                const delta = extremeCost - calmCost;
+                const ratio = calmCost > 0 ? extremeCost / calmCost : 1;
+                return (
+                  <div key={key} style={{ background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 12px" }}>
+                    <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6, display: "flex", alignItems: "center", gap: 4 }}>
+                      <span>{a.icon}</span><span>{a.label}</span>
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--color-text-secondary)" }}>5 mph</div>
+                    <div style={{ fontSize: 14, fontWeight: 500 }}>{fmt(calmCost)}</div>
+                    <div style={{ fontSize: 10, color: "var(--color-text-secondary)", marginTop: 6 }}>50 mph</div>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: a.windCeilingMph < 50 ? "#A32D2D" : a.color }}>
+                      {fmt(extremeCost)}
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 4 }}>
+                      {ratio >= 100 ? "→ ∞×" : ratio >= 2 ? `→ ${ratio.toFixed(1)}× cost` : `→ +${fmt(delta)}`}
+                    </div>
+                    <div style={{ fontSize: 10, marginTop: 4, color: cve.extreme.structuresLost > cve.calm.structuresLost * 3 ? "#A32D2D" : "var(--color-text-secondary)" }}>
+                      {cve.calm.structuresLost} → {cve.extreme.structuresLost} structures lost
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Wind sweep chart */}
+          <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "12px 14px", marginTop: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Total season cost vs wind speed</div>
+            <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 8 }}>
+              Holding all other variables constant. Watch what happens at the 30 mph threshold.
+            </div>
+            <div style={{ height: 280 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={windSweep} margin={{ top: 5, right: 12, bottom: 22, left: 0 }}>
+                  <CartesianGrid stroke="var(--color-border-tertiary)" strokeDasharray="2 4" />
+                  <XAxis dataKey="mph" tick={{ fontSize: 11 }}
+                         label={{ value: "wind speed (mph)", position: "insideBottom", offset: -10, fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt}
+                         label={{ value: "season cost", angle: -90, position: "insideLeft", fontSize: 11 }} />
+                  <Tooltip formatter={fmt} contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                           labelFormatter={mph => `${mph} mph`} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  {/* Vertical reference line at 30 mph wind ceiling */}
+                  {Object.entries(ASSETS).map(([key, a]) => (
+                    <Line key={key} type="monotone" dataKey={key} name={a.label}
+                          stroke={a.color} strokeWidth={2} dot={false} />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6, lineHeight: 1.5 }}>
+              Drone and aircraft cost curves jump at ~30 mph because they're grounded — they keep paying the lease but stop contributing suppression, so damages dominate. Firedome stays nearly flat: it doesn't fight the fire, it protects what's inside its radius. Trucks degrade gradually but never go to zero.
+            </div>
+          </div>
+
           <div style={{ marginTop: 14, fontSize: 11, color: "var(--color-text-tertiary)", lineHeight: 1.6 }}>
-            Seasonal lease costs reflect ~5-month operating leases (May–Sep), not capex amortization. On-site = pre-positioned in protected zone; regional = staged at a hub serving wider area. Damages averaged at $850k/ha burned plus $600k/structure lost in WUI corridors. Effectiveness applies diminishing returns (units^0.85) and a wind penalty per asset. Indicative only — not for operational planning.
+            Seasonal lease costs reflect ~5-month operating leases (May–Sep). On-site = pre-positioned in protected zone; regional = staged at a hub. Firedome priced per coverage unit (305 m radius, ~29 ha) at $10K/month per unit. Damages averaged at $850k/ha burned + $600k/structure lost. Wind ceilings: aircraft 30 mph, drones 30 mph, trucks degrade above 30 mph but operate, Firedome unaffected. Indicative only — not for operational planning.
           </div>
         </div>
       </div>
