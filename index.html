@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Wildfire Suppression Simulator — Third Sphere</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --color-background-primary: #FFFFFF;
+    --color-background-secondary: #F1F1F1;
+    --color-background-tertiary: #FAFAFA;
+    --color-text-primary: #000000;
+    --color-text-secondary: #5F5E5A;
+    --color-text-tertiary: #888780;
+    --color-border-tertiary: rgba(0, 0, 0, 0.12);
+    --color-border-secondary: rgba(0, 0, 0, 0.25);
+    --border-radius-md: 8px;
+    --border-radius-lg: 12px;
+    --font-sans: 'Poppins', system-ui, -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: var(--font-sans);
+    background: #FFFFFF;
+    color: var(--color-text-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: var(--color-border-tertiary);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: #0000E9;
+    cursor: pointer;
+    border: 2px solid white;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: #0000E9;
+    cursor: pointer;
+    border: 2px solid white;
+  }
+  select, button {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    padding: 6px 10px;
+    border: 0.5px solid var(--color-border-secondary);
+    border-radius: var(--border-radius-md);
+    background: var(--color-background-primary);
+    color: var(--color-text-primary);
+    cursor: pointer;
+  }
+  button:hover { background: var(--color-background-secondary); }
+
+  .ts-header {
+    border-bottom: 1px solid var(--color-border-tertiary);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .ts-logo {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+    color: #0000E9;
+  }
+  .ts-tag {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  #root { padding: 0 24px 32px; }
+</style>
+</head>
+<body>
+<div class="ts-header">
+  <div class="ts-logo">Third Sphere</div>
+  <div class="ts-tag">Wildfire suppression simulator</div>
+</div>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/prop-types@15.7.2/prop-types.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-type="module">
+const { useState, useMemo } = React;
+const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, Legend, CartesianGrid } = Recharts;
+
+// ---------- model parameters ----------
+// Distances assumed for an Urban Wildlife Interface (WUI) ignition:
+//   - Local fire station: 8 km from ignition point
+//   - Regional air-tanker base: 80 km
+//   - Drone hub (regional): 25 km
+//   - Firedome installations: pre-positioned at homes (zero travel)
+//
+// Cost figures are rough U.S. order-of-magnitude estimates drawn from public
+// procurement data, CAL FIRE / USFS reports, and manufacturer disclosures.
+// They are meant for relative comparison, not budgeting.
+
+// Each asset has TWO or THREE leasing positions and physical operating parameters.
+// Wind ceiling: above this mph, asset is grounded (suppression = 0).
+// Firedome has no wind ceiling — it's fixed ground infrastructure.
+const ASSETS = {
+  firedome: {
+    label: "Firedome",
+    icon: "🏠",
+    color: "#7F77DD",
+    unitName: "homes equipped",
+    unitHelp: "Each unit = one structure with a perimeter suppression system. 1,000 ft (305 m) coverage radius. 10 gal payload launched every 10 s = 1 gal/s sustained. Sensor-triggered, autonomous, no wind ceiling.",
+    suppressionRate: 0.5,
+    rangeM: 305,
+    payloadGal: 10,
+    cycleS: 10,
+    windCeilingMph: 999,
+    nightCapable: true,
+    description: "Property-level autonomous perimeter suppression",
+    positions: {
+      onSite: {
+        label: "Installed at property",
+        travelKm: 0,
+        deployMin: 0.3,
+        seasonLease: 8_000,
+        perDeployment: 0,
+      },
+      regional: {
+        label: "Mobile rapid-deploy unit",
+        travelKm: 12,
+        deployMin: 6,
+        seasonLease: 35_000,
+        perDeployment: 1_500,
+      },
+    },
+  },
+  drones: {
+    label: "Drone swarm",
+    icon: "🛸",
+    color: "#1D9E75",
+    unitName: "drones",
+    unitHelp: "Each unit = one heavy-lift suppression drone. ~200 L payload, 5–8 min cycle time, 15–25 min flight endurance per charge. Grounded above ~30 mph wind.",
+    suppressionRate: 1.6,
+    payloadL: 200,
+    cycleMin: 6,
+    windCeilingMph: 30,
+    nightCapable: true,
+    description: "Autonomous heavy-lift suppression drones",
+    positions: {
+      onSite: {
+        label: "Local pad (5 km)",
+        travelKm: 5,
+        deployMin: 4,
+        seasonLease: 180_000,
+        perDeployment: 8_000,
+      },
+      truckMounted: {
+        label: "Truck-mounted swarm",
+        travelKm: 8,
+        deployMin: 12,
+        seasonLease: 75_000,
+        perDeployment: 6_000,
+      },
+      regional: {
+        label: "Regional hub (40 km)",
+        travelKm: 40,
+        deployMin: 6,
+        seasonLease: 95_000,
+        perDeployment: 8_000,
+      },
+    },
+  },
+  aircraft: {
+    label: "Air tankers",
+    icon: "✈️",
+    color: "#D85A30",
+    unitName: "tankers",
+    unitHelp: "Each unit = one fixed-wing tanker (CL-415: 1,620 gal) or VLAT (DC-10: 9,400 gal) on contract. 30–45 min cycle time. Grounded above ~30 mph or in heavy smoke. Limited night ops.",
+    suppressionRate: 11.0,
+    payloadGal: 3000,
+    cycleMin: 38,
+    windCeilingMph: 30,
+    nightCapable: false,
+    description: "Fixed-wing tankers and helitankers",
+    positions: {
+      onSite: {
+        label: "Exclusive-use (30 km base)",
+        travelKm: 30,
+        deployMin: 10,
+        seasonLease: 4_200_000,
+        perDeployment: 65_000,
+      },
+      regional: {
+        label: "Call-when-needed (120 km)",
+        travelKm: 120,
+        deployMin: 25,
+        seasonLease: 350_000,
+        perDeployment: 95_000,
+      },
+    },
+  },
+  trucks: {
+    label: "Fire crews + engines",
+    icon: "🚒",
+    color: "#BA7517",
+    unitName: "engines + crews",
+    unitHelp: "Each unit = one Type 1 or Type 3 engine with 3–4 person crew. Pumps ~500 gpm, 500 gal onboard tank. Works in any wind but reduced effectiveness above 30 mph.",
+    suppressionRate: 0.85,
+    pumpGpm: 500,
+    tankGal: 500,
+    windCeilingMph: 999,
+    windPenaltyAbove: 30,
+    nightCapable: true,
+    description: "Ground crews with Type 1/3 engines",
+    positions: {
+      onSite: {
+        label: "Local station (8 km)",
+        travelKm: 8,
+        deployMin: 9,
+        seasonLease: 950_000,
+        perDeployment: 5_000,
+      },
+      regional: {
+        label: "Mutual aid (35 km)",
+        travelKm: 35,
+        deployMin: 12,
+        seasonLease: 180_000,
+        perDeployment: 7_500,
+      },
+    },
+  },
+};
+
+// Site profiles — same structure count, very different geometry.
+// densityHaPerStructure = average land area per structure (lower = tighter cluster)
+// emberMult = how much ember jumping helps the fire spread structure-to-structure
+// fuelMult = how much surrounding wildland fuel feeds the fire base rate
+const SETTINGS = {
+  community: {
+    label: "Residential community",
+    icon: "🏘️",
+    densityHaPerStructure: 0.15,  // ~6-7 homes per hectare, suburban WUI
+    emberMult: 1.4,               // dense roofs = high structure-to-structure ignition
+    fuelMult: 0.9,                // managed yards, less continuous wildland fuel
+    blurb: "Tight suburban cluster. Embers jump roof-to-roof; once one home goes, neighbors follow within minutes.",
+  },
+  wineFarm: {
+    label: "Wine farm / vineyard",
+    icon: "🍇",
+    densityHaPerStructure: 8,     // few buildings spread across hundreds of ha
+    emberMult: 0.4,               // huge gaps between structures
+    fuelMult: 1.3,                // vineyard rows + dry grass + woodland edges
+    blurb: "Sparse buildings across a large estate. Crop rows and dry grass carry the fire; structures rarely ignite each other.",
+  },
+  skiResort: {
+    label: "Ski resort",
+    icon: "🎿",
+    densityHaPerStructure: 1.5,   // base village clustered, lifts spread out
+    emberMult: 0.9,               // mixed: tight base + isolated lift huts
+    fuelMult: 1.5,                // dense conifer forest, ladder fuels
+    blurb: "Clustered base village surrounded by conifer forest. Crown fire potential is the dominant threat, not structure-to-structure.",
+  },
+};
+
+const WIND_LEVELS = [
+  { label: "Calm (0–10 mph)",      mph: 5,  spreadMult: 1.0,  ember: 0.05 },
+  { label: "Breezy (10–20 mph)",   mph: 15, spreadMult: 2.2,  ember: 0.20 },
+  { label: "Strong (20–35 mph)",   mph: 28, spreadMult: 4.5,  ember: 0.45 },
+  { label: "Extreme (35–60+ mph)", mph: 50, spreadMult: 9.0,  ember: 0.80 },
+];
+
+// Average travel speeds (km/min)
+const SPEED = {
+  firedome: 0,
+  drones: 2.0,    // ~120 km/h
+  aircraft: 6.7,  // ~400 km/h
+  trucks: 1.0,    // ~60 km/h with terrain
+};
+
+// Average loss per hectare burned in a WUI corridor (structures + suppression damages)
+const LOSS_PER_HECTARE = 850_000;
+
+function simulate({ asset, units, windIdx, fuelMoisture, ignitionDistanceKm, structuresAtRisk, settingKey }) {
+  const a = ASSETS[asset];
+  const wind = WIND_LEVELS[windIdx];
+  const setting = SETTINGS[settingKey];
+
+  // Wind ceiling: above asset's ceiling, suppression is zero (grounded).
+  // For ground assets, apply a soft penalty above the wind penalty threshold.
+  const grounded = wind.mph > a.windCeilingMph;
+  const groundPenalty = a.windPenaltyAbove && wind.mph > a.windPenaltyAbove
+    ? Math.max(0.3, 1 - (wind.mph - a.windPenaltyAbove) / 50)
+    : 1.0;
+
+  // Iterate over ALL positions defined for this asset (handles 2 or 3 tiers).
+  const tiers = Object.keys(a.positions).map(posKey => {
+    const pos = a.positions[posKey];
+    const u = units[posKey] || 0;
+    if (u === 0) return null;
+
+    const travelKm = pos.travelKm === 0
+      ? 0
+      : Math.max(0, ignitionDistanceKm * (pos.travelKm / 25));
+    const speed = SPEED[asset];
+    const travelMin = speed > 0 ? travelKm / speed : 0;
+    const arrivalMin = travelMin + pos.deployMin;
+
+    const effUnits = Math.pow(u, 0.85);
+    // HARD wind ceiling: grounded → zero. Otherwise apply soft penalty for ground assets.
+    const cap = grounded ? 0 : a.suppressionRate * effUnits * groundPenalty;
+
+    return {
+      posKey,
+      pos,
+      u,
+      arrivalMin,
+      cap,
+      grounded,
+      seasonLease: pos.seasonLease * u,
+      sortieCost: pos.perDeployment * u,
+    };
+  }).filter(Boolean);
+
+  const totalUnits = tiers.reduce((s, t) => s + t.u, 0);
+  const activeTiers = tiers.filter(t => !t.grounded && t.cap > 0);
+  const earliestArrival = activeTiers.length ? Math.min(...activeTiers.map(t => t.arrivalMin)) : 999;
+
+  // Fire growth
+  const moistureFactor = 1.6 - fuelMoisture / 100;
+  const spreadHaPerMin = 0.4 * wind.spreadMult * moistureFactor * setting.fuelMult;
+  const effectiveEmber = wind.ember * setting.emberMult;
+
+  // Timeline
+  const timeline = [];
+  let burned = 0;
+  let active = 0;
+  let contained = false;
+  let containmentMin = null;
+
+  for (let t = 0; t <= 240; t++) {
+    if (!contained) {
+      // Sum suppression capacity from each tier that has arrived
+      let suppression = 0;
+      for (const tier of tiers) {
+        if (t >= tier.arrivalMin) suppression += tier.cap;
+      }
+
+      if (suppression === 0) {
+        burned += spreadHaPerMin;
+        active = burned;
+      } else {
+        const newGrowth = spreadHaPerMin * (1 + effectiveEmber);
+        const netChange = newGrowth - suppression;
+        active = Math.max(0, active + netChange);
+        if (netChange > 0) burned += netChange;
+        if (active <= 0.5 && containmentMin === null) {
+          contained = true;
+          containmentMin = t;
+        }
+      }
+    }
+    timeline.push({
+      t,
+      burned: Math.round(burned * 10) / 10,
+      active: Math.round(active * 10) / 10,
+    });
+  }
+
+  if (containmentMin === null) containmentMin = 240;
+
+  const peakActive = Math.max(...timeline.map(p => p.active));
+  const structuresPerHaBurned = 1 / setting.densityHaPerStructure;
+  const structuresLost = Math.min(
+    structuresAtRisk,
+    Math.round(peakActive * structuresPerHaBurned * 0.4 * (1 + effectiveEmber))
+  );
+
+  // Costs — seasonal lease replaces capex+opex for this season
+  const seasonLease = tiers.reduce((s, t) => s + t.seasonLease, 0);
+  const sortieCost = tiers.reduce((s, t) => s + t.sortieCost, 0);
+  const damages = burned * LOSS_PER_HECTARE + structuresLost * 600_000;
+  const totalSeasonCost = seasonLease + sortieCost + damages;
+
+  return {
+    timeline,
+    arrivalMin: Math.round(earliestArrival * 10) / 10,
+    containmentMin,
+    burnedHa: Math.round(burned * 10) / 10,
+    structuresLost,
+    seasonLease,
+    sortieCost,
+    damages,
+    totalSeasonCost,
+    totalUnits,
+    tiers,
+  };
+}
+
+const HelpDot = ({ help }) => {
+  const [show, setShow] = useState(false);
+  return (
+    <span
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+      style={{
+        cursor: "help",
+        width: 14, height: 14, borderRadius: "50%",
+        background: "var(--color-border-tertiary)",
+        color: "var(--color-text-secondary)",
+        fontSize: 10, fontWeight: 500,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        position: "relative", flexShrink: 0,
+      }}
+    >
+      ?
+      {show && (
+        <span style={{
+          position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
+          width: 220, padding: "8px 10px",
+          background: "var(--color-text-primary)", color: "var(--color-background-primary)",
+          fontSize: 11, fontWeight: 400, lineHeight: 1.4,
+          borderRadius: 6, zIndex: 10, textAlign: "left",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+        }}>
+          {help}
+        </span>
+      )}
+    </span>
+  );
+};
+
+const Slider = ({ label, value, min, max, step, onChange, suffix, help }) => {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6, alignItems: "center" }}>
+        <span style={{ color: "var(--color-text-secondary)", display: "flex", alignItems: "center", gap: 4 }}>
+          {label}
+          {help && <HelpDot help={help} />}
+        </span>
+        <span style={{ fontWeight: 500 }}>{value}{suffix}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value}
+             onChange={e => onChange(Number(e.target.value))}
+             style={{ width: "100%" }} />
+    </div>
+  );
+};
+
+// Density map — dot-pattern visualization of how the same structure count
+// lays out across different setting types. Same structures, different geometry.
+const DensityMap = ({ settingKey, structures }) => {
+  const setting = SETTINGS[settingKey];
+  const W = 320, H = 180;
+
+  // Generate dot positions deterministically based on setting profile.
+  // We use a seeded pseudo-random so dots stay put across renders.
+  const dots = useMemo(() => {
+    const seed = settingKey.length * 17;
+    let s = seed;
+    const rand = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
+    const cap = Math.min(structures, 200); // visual cap
+    const out = [];
+
+    if (settingKey === "community") {
+      // Tight grid with small jitter
+      const cols = Math.ceil(Math.sqrt(cap * (W / H)));
+      const rows = Math.ceil(cap / cols);
+      const gx = (W - 30) / cols;
+      const gy = (H - 30) / rows;
+      for (let i = 0; i < cap; i++) {
+        const c = i % cols, r = Math.floor(i / cols);
+        out.push({
+          x: 15 + c * gx + (rand() - 0.5) * 4,
+          y: 15 + r * gy + (rand() - 0.5) * 4,
+        });
+      }
+    } else if (settingKey === "wineFarm") {
+      // Few buildings clustered top-left; rest is "vineyard" rendered as rows
+      const buildings = Math.min(cap, Math.max(3, Math.round(cap * 0.05)));
+      for (let i = 0; i < buildings; i++) {
+        out.push({ x: 30 + (i % 3) * 14 + rand() * 3, y: 30 + Math.floor(i / 3) * 14 + rand() * 3, big: true });
+      }
+    } else if (settingKey === "skiResort") {
+      // Cluster at base + scattered lift-line huts radiating up
+      const base = Math.min(cap, Math.max(8, Math.round(cap * 0.6)));
+      for (let i = 0; i < base; i++) {
+        out.push({
+          x: W * 0.25 + (rand() - 0.5) * 50,
+          y: H * 0.75 + (rand() - 0.5) * 30,
+        });
+      }
+      // Scattered along ridges
+      for (let i = 0; i < cap - base; i++) {
+        out.push({
+          x: W * 0.45 + rand() * (W * 0.5),
+          y: H * 0.15 + rand() * (H * 0.5),
+        });
+      }
+    }
+    return out;
+  }, [settingKey, structures]);
+
+  // Background fills depending on setting
+  const bg = {
+    community: "#E1F5EE",
+    wineFarm: "#EAF3DE",
+    skiResort: "#E6F1FB",
+  }[settingKey];
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: "block", borderRadius: 6 }}>
+      <rect x="0" y="0" width={W} height={H} fill={bg} />
+
+      {/* Setting-specific terrain features */}
+      {settingKey === "wineFarm" && (
+        <g opacity="0.5">
+          {Array.from({ length: 14 }).map((_, i) => (
+            <line key={i} x1={i * 25 + 20} y1={70} x2={i * 25 + 20} y2={H - 5}
+                  stroke="#97C459" strokeWidth="1.5" />
+          ))}
+        </g>
+      )}
+      {settingKey === "skiResort" && (
+        <g opacity="0.6">
+          {/* Conifer triangles scattered */}
+          {Array.from({ length: 30 }).map((_, i) => {
+            const x = (i * 53) % W;
+            const y = (i * 31) % (H - 20);
+            return <polygon key={i} points={`${x},${y+8} ${x-4},${y+14} ${x+4},${y+14}`} fill="#3B6D11" />;
+          })}
+          {/* Lift line */}
+          <line x1={W*0.25} y1={H*0.75} x2={W*0.85} y2={H*0.15}
+                stroke="#888780" strokeWidth="0.8" strokeDasharray="3 2" />
+        </g>
+      )}
+
+      {/* Structures */}
+      {dots.map((d, i) => (
+        <rect key={i}
+              x={d.x - (d.big ? 4 : 2)}
+              y={d.y - (d.big ? 4 : 2)}
+              width={d.big ? 8 : 4}
+              height={d.big ? 8 : 4}
+              fill={d.big ? "#5F5E5A" : "#444441"}
+              rx="1" />
+      ))}
+
+      {/* Scale bar */}
+      <g transform={`translate(${W - 75}, ${H - 14})`}>
+        <line x1="0" y1="0" x2="60" y2="0" stroke="#444441" strokeWidth="1" />
+        <line x1="0" y1="-3" x2="0" y2="3" stroke="#444441" strokeWidth="1" />
+        <line x1="60" y1="-3" x2="60" y2="3" stroke="#444441" strokeWidth="1" />
+        <text x="30" y="-5" fontSize="9" fill="#444441" textAnchor="middle">
+          {settingKey === "community" ? "200 m" : settingKey === "wineFarm" ? "1.5 km" : "800 m"}
+        </text>
+      </g>
+    </svg>
+  );
+};
+
+const Stat = ({ label, value, sub, color }) => (
+  <div style={{ background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px" }}>
+    <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{label}</div>
+    <div style={{ fontSize: 20, fontWeight: 500, color: color || "var(--color-text-primary)", marginTop: 2 }}>{value}</div>
+    {sub && <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 2 }}>{sub}</div>}
+  </div>
+);
+
+
+function FirefightingSim() {
+  const [units, setUnits] = useState({
+    firedome: { onSite: 50, regional: 0 },
+    drones:   { onSite: 2,  truckMounted: 0, regional: 4 },
+    aircraft: { onSite: 0,  regional: 2 },
+    trucks:   { onSite: 3,  regional: 4 },
+  });
+  const [windIdx, setWindIdx] = useState(1);
+  const [fuelMoisture, setFuelMoisture] = useState(35);
+  const [ignitionDist, setIgnitionDist] = useState(25);
+  const [structuresAtRisk, setStructuresAtRisk] = useState(120);
+  const [settingKey, setSettingKey] = useState("community");
+  const [view, setView] = useState("active");
+
+  const setUnit = (asset, posKey, val) => {
+    setUnits(u => ({ ...u, [asset]: { ...u[asset], [posKey]: val } }));
+  };
+
+  const results = useMemo(() => {
+    const out = {};
+    for (const key of Object.keys(ASSETS)) {
+      out[key] = simulate({
+        asset: key,
+        units: units[key],
+        windIdx,
+        fuelMoisture,
+        ignitionDistanceKm: ignitionDist,
+        structuresAtRisk,
+        settingKey,
+      });
+    }
+    return out;
+  }, [units, windIdx, fuelMoisture, ignitionDist, structuresAtRisk, settingKey]);
+
+  // Combine timelines for chart
+  const chartData = useMemo(() => {
+    const points = [];
+    for (let t = 0; t <= 240; t += 5) {
+      const row = { t };
+      for (const key of Object.keys(ASSETS)) {
+        row[key] = results[key].timeline[t][view];
+      }
+      points.push(row);
+    }
+    return points;
+  }, [results, view]);
+
+  const fmt = n => {
+    if (n >= 1_000_000_000) return `$${(n/1_000_000_000).toFixed(2)}B`;
+    if (n >= 1_000_000) return `$${(n/1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `$${(n/1_000).toFixed(0)}K`;
+    return `$${Math.round(n)}`;
+  };
+
+  const winner = useMemo(() => {
+    return Object.entries(results).reduce((best, [k, r]) => {
+      if (!best || r.totalSeasonCost < best.cost) return { key: k, cost: r.totalSeasonCost };
+      return best;
+    }, null);
+  }, [results]);
+
+  return (
+    <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)", padding: "16px 4px", maxWidth: 1100, margin: "0 auto" }}>
+      <h1 style={{ fontSize: 22, fontWeight: 500, margin: "0 0 4px" }}>Firefighting approaches at the wildland–urban interface</h1>
+      <p style={{ fontSize: 14, color: "var(--color-text-secondary)", margin: "0 0 20px" }}>
+        Adjust resources, weather, and ignition geometry. Compare time-to-containment, hectares burned, and total incident cost across four suppression strategies.
+      </p>
+
+      <div style={{ display: "grid", gridTemplateColumns: "320px minmax(0, 1fr)", gap: 20, alignItems: "start" }}>
+        {/* Controls */}
+        <div style={{ background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-lg)", padding: "16px 16px 4px" }}>
+          <h3 style={{ fontSize: 14, fontWeight: 500, margin: "0 0 8px", color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: 0.5 }}>Site profile</h3>
+
+          <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+            {Object.entries(SETTINGS).map(([k, s]) => (
+              <button key={k}
+                      onClick={() => setSettingKey(k)}
+                      style={{
+                        flex: 1,
+                        background: settingKey === k ? "var(--color-background-primary)" : "transparent",
+                        border: settingKey === k ? "0.5px solid var(--color-border-secondary)" : "0.5px solid transparent",
+                        fontSize: 11,
+                        padding: "6px 4px",
+                        textAlign: "center",
+                      }}>
+                <div style={{ fontSize: 16 }}>{s.icon}</div>
+                <div style={{ marginTop: 2, fontWeight: settingKey === k ? 500 : 400 }}>
+                  {s.label.split(" ")[0]}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <DensityMap settingKey={settingKey} structures={structuresAtRisk} />
+
+          <p style={{ fontSize: 11, color: "var(--color-text-secondary)", lineHeight: 1.45, margin: "8px 0 16px" }}>
+            {SETTINGS[settingKey].blurb}
+          </p>
+
+          <h3 style={{ fontSize: 14, fontWeight: 500, margin: "0 0 12px", color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: 0.5 }}>Conditions</h3>
+
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 6 }}>Wind condition</div>
+            <select value={windIdx} onChange={e => setWindIdx(Number(e.target.value))}
+                    style={{ width: "100%" }}>
+              {WIND_LEVELS.map((w, i) => <option key={i} value={i}>{w.label}</option>)}
+            </select>
+          </div>
+
+          <Slider label="Fuel moisture" value={fuelMoisture} min={5} max={80} step={1} onChange={setFuelMoisture} suffix="%"
+                  help="Moisture content of the wildland fuel. Below 15% is critical fire weather; above 60% the fuel is hard to ignite." />
+          <Slider label="Ignition distance from staging" value={ignitionDist} min={5} max={80} step={1} onChange={setIgnitionDist} suffix=" km"
+                  help="How far the ignition is from the nearest dispatch hub. Scales travel time for drones, aircraft, and engines. Firedome is unaffected (already on site)." />
+          <Slider label="Structures at risk" value={structuresAtRisk} min={10} max={500} step={10} onChange={setStructuresAtRisk} suffix=""
+                  help="Total number of structures in the threatened zone. Caps the maximum structure-loss number." />
+
+          <h3 style={{ fontSize: 14, fontWeight: 500, margin: "20px 0 4px", color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: 0.5 }}>Seasonal lease — resources</h3>
+          <p style={{ fontSize: 11, color: "var(--color-text-tertiary)", lineHeight: 1.45, margin: "0 0 12px" }}>
+            Each asset can be leased seasonally across multiple positions: <span style={{ fontWeight: 500 }}>on-site</span> (fast, expensive), <span style={{ fontWeight: 500 }}>regional</span> (slower, cheaper), or in some cases truck-mounted. Mix and match.
+          </p>
+          {Object.entries(ASSETS).map(([key, a]) => {
+            const maxByPos = key === "firedome"
+              ? { onSite: 500, regional: 50 }
+              : key === "trucks" ? { onSite: 15, regional: 20 }
+              : key === "drones" ? { onSite: 20, truckMounted: 30, regional: 30 }
+              : { onSite: 6, regional: 10 };
+            return (
+              <div key={key} style={{
+                background: "var(--color-background-primary)",
+                border: "0.5px solid var(--color-border-tertiary)",
+                borderRadius: "var(--border-radius-md)",
+                padding: "10px 12px",
+                marginBottom: 10,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, fontSize: 13, fontWeight: 500 }}>
+                  <span style={{ fontSize: 15 }}>{a.icon}</span>
+                  <span>{a.label}</span>
+                  <HelpDot help={a.unitHelp} />
+                </div>
+                {Object.entries(a.positions).map(([posKey, pos]) => (
+                  <div key={posKey} style={{ marginBottom: 6 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+                      <span style={{ color: "var(--color-text-secondary)" }}>
+                        {pos.label}
+                        <span style={{ color: "var(--color-text-tertiary)", marginLeft: 4 }}>
+                          · {fmt(pos.seasonLease)}/season
+                        </span>
+                      </span>
+                      <span style={{ fontWeight: 500 }}>{units[key][posKey]}</span>
+                    </div>
+                    <input type="range" min={0} max={maxByPos[posKey]} step={1}
+                           value={units[key][posKey]}
+                           onChange={e => setUnit(key, posKey, Number(e.target.value))}
+                           style={{ width: "100%" }} />
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Right column */}
+        <div>
+          {/* Stat cards per asset */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10, marginBottom: 16 }}>
+            {Object.entries(ASSETS).map(([key, a]) => {
+              const r = results[key];
+              const isWinner = winner?.key === key;
+              const wind = WIND_LEVELS[windIdx];
+              const isGrounded = wind.mph > a.windCeilingMph;
+              return (
+                <div key={key} style={{
+                  background: "var(--color-background-primary)",
+                  border: isWinner ? `2px solid ${a.color}` : "0.5px solid var(--color-border-tertiary)",
+                  borderRadius: "var(--border-radius-lg)",
+                  padding: "12px 14px",
+                  position: "relative",
+                  opacity: isGrounded ? 0.65 : 1,
+                }}>
+                  {isWinner && !isGrounded && (
+                    <div style={{ position: "absolute", top: -10, right: 10, background: a.color, color: "white", fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 500 }}>
+                      Lowest total cost
+                    </div>
+                  )}
+                  {isGrounded && (
+                    <div style={{ position: "absolute", top: -10, right: 10, background: "#A32D2D", color: "white", fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 500 }}>
+                      Grounded · wind &gt; {a.windCeilingMph}mph
+                    </div>
+                  )}
+                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 16 }}>{a.icon}</span>
+                    <span>{a.label}</span>
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginBottom: 8, lineHeight: 1.35 }}>
+                    {key === "firedome" && `${a.rangeM}m radius · ${a.payloadGal} gal/${a.cycleS}s`}
+                    {key === "drones" && `${a.payloadL}L payload · ${a.cycleMin}min cycle · ${a.windCeilingMph}mph ceiling`}
+                    {key === "aircraft" && `${a.payloadGal.toLocaleString()} gal/drop · ${a.cycleMin}min cycle · ${a.windCeilingMph}mph ceiling`}
+                    {key === "trucks" && `${a.pumpGpm} gpm pump · ${a.tankGal} gal tank`}
+                  </div>
+                  <div style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "var(--color-text-secondary)" }}>Arrival</span>
+                      <span style={{ fontWeight: 500 }}>{r.arrivalMin} min</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "var(--color-text-secondary)" }}>Contained</span>
+                      <span style={{ fontWeight: 500 }}>
+                        {r.containmentMin >= 240 ? "not in 4h" : `${r.containmentMin} min`}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "var(--color-text-secondary)" }}>Burned</span>
+                      <span style={{ fontWeight: 500 }}>{r.burnedHa} ha</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "var(--color-text-secondary)" }}>Structures lost</span>
+                      <span style={{ fontWeight: 500 }}>{r.structuresLost}</span>
+                    </div>
+                    <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", marginTop: 4, paddingTop: 6, display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "var(--color-text-secondary)" }}>Season total</span>
+                      <span style={{ fontWeight: 500, color: a.color }}>{fmt(r.totalSeasonCost)}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Chart */}
+          <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "12px 14px 8px", marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>Fire footprint over time</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setView("active")}
+                        style={{ background: view === "active" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
+                  Active fire
+                </button>
+                <button onClick={() => setView("burned")}
+                        style={{ background: view === "burned" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
+                  Cumulative burned
+                </button>
+              </div>
+            </div>
+            <div style={{ height: 240 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 5, right: 12, bottom: 18, left: 0 }}>
+                  <CartesianGrid stroke="var(--color-border-tertiary)" strokeDasharray="2 4" />
+                  <XAxis dataKey="t" tick={{ fontSize: 11 }} label={{ value: "minutes since ignition", position: "insideBottom", offset: -8, fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} label={{ value: "hectares", angle: -90, position: "insideLeft", fontSize: 11 }} />
+                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  {Object.entries(ASSETS).map(([key, a]) => (
+                    <Line key={key} type="monotone" dataKey={key} name={a.label} stroke={a.color} strokeWidth={2} dot={false} />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Cost breakdown */}
+          <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "12px 14px" }}>
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Season cost stack — leases + sorties + damages</div>
+            <div style={{ height: 220 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={Object.entries(ASSETS).map(([key, a]) => {
+                  const r = results[key];
+                  const onSiteLease = (r.tiers.find(t => t.posKey === "onSite")?.seasonLease) || 0;
+                  const regionalLease = (r.tiers.find(t => t.posKey === "regional")?.seasonLease) || 0;
+                  return {
+                    name: a.label,
+                    "On-site lease": onSiteLease,
+                    "Regional lease": regionalLease,
+                    "Sortie cost": r.sortieCost,
+                    "Incident damages": r.damages,
+                  };
+                })} margin={{ top: 5, right: 12, bottom: 5, left: 0 }}>
+                  <CartesianGrid stroke="var(--color-border-tertiary)" strokeDasharray="2 4" />
+                  <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt} />
+                  <Tooltip formatter={fmt} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="On-site lease" stackId="a" fill="#7F77DD" />
+                  <Bar dataKey="Regional lease" stackId="a" fill="#AFA9EC" />
+                  <Bar dataKey="Sortie cost" stackId="a" fill="#BA7517" />
+                  <Bar dataKey="Incident damages" stackId="a" fill="#D85A30" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14, fontSize: 11, color: "var(--color-text-tertiary)", lineHeight: 1.6 }}>
+            Seasonal lease costs reflect ~5-month operating leases (May–Sep), not capex amortization. On-site = pre-positioned in protected zone; regional = staged at a hub serving wider area. Damages averaged at $850k/ha burned plus $600k/structure lost in WUI corridors. Effectiveness applies diminishing returns (units^0.85) and a wind penalty per asset. Indicative only — not for operational planning.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<FirefightingSim />);
+</script>
+</body>
+</html>
