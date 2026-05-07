@@ -226,26 +226,32 @@ const SETTINGS = {
   community: {
     label: "Residential community",
     icon: "🏘️",
-    densityHaPerStructure: 0.15,  // ~6-7 homes per hectare, suburban WUI
-    emberMult: 1.4,               // dense roofs = high structure-to-structure ignition
-    fuelMult: 0.9,                // managed yards, less continuous wildland fuel
+    densityHaPerStructure: 0.15,
+    emberMult: 1.4,
+    fuelMult: 0.9,
+    landValuePerHa: 50_000,        // backyards, mostly low-value brush between homes
+    highValueFrac: 0.20,           // 20% of land area is "high value" (lawns/landscaping near homes)
     blurb: "Tight suburban cluster. Embers jump roof-to-roof; once one home goes, neighbors follow within minutes.",
   },
   wineFarm: {
     label: "Wine farm / vineyard",
     icon: "🍇",
-    densityHaPerStructure: 8,     // few buildings spread across hundreds of ha
-    emberMult: 0.4,               // huge gaps between structures
-    fuelMult: 1.3,                // vineyard rows + dry grass + woodland edges
-    blurb: "Sparse buildings across a large estate. Crop rows and dry grass carry the fire; structures rarely ignite each other.",
+    densityHaPerStructure: 8,
+    emberMult: 0.4,
+    fuelMult: 1.3,
+    landValuePerHa: 180_000,       // producing vineyard land, plus 3-5yr replant cycle to next harvest
+    highValueFrac: 0.65,           // 65% planted vines, rest is grass/woodland
+    blurb: "Sparse buildings across a large estate. The vineyard rows themselves are the asset — replanting after burn means 3–5 years to first harvest.",
   },
   skiResort: {
     label: "Ski resort",
     icon: "🎿",
-    densityHaPerStructure: 1.5,   // base village clustered, lifts spread out
-    emberMult: 0.9,               // mixed: tight base + isolated lift huts
-    fuelMult: 1.5,                // dense conifer forest, ladder fuels
-    blurb: "Clustered base village surrounded by conifer forest. Crown fire potential is the dominant threat, not structure-to-structure.",
+    densityHaPerStructure: 1.5,
+    emberMult: 0.9,
+    fuelMult: 1.5,
+    landValuePerHa: 95_000,        // managed timber + ski run infrastructure
+    highValueFrac: 0.45,           // ski runs + groomed timber zones
+    blurb: "Clustered base village surrounded by conifer forest. Burned timber takes decades to recover; ski runs need restoration before reopening.",
   },
 };
 
@@ -273,7 +279,9 @@ const SPEED = {
 };
 
 // Average loss per hectare burned in a WUI corridor (structures + suppression damages)
-const LOSS_PER_HECTARE = 850_000;
+// Note: actual damages are now computed per-site using SETTINGS.landValuePerHa and highValueFrac
+// because flat per-hectare loss double-counted structures and ignored site differences.
+const STRUCTURE_LOSS = 600_000;  // per structure
 
 function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionDistanceKm, structuresAtRisk, settingKey, firedomeCoveragePct }) {
   const a = ASSETS[asset];
@@ -358,6 +366,8 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
       t,
       burned: Math.round(burned * 10) / 10,
       active: Math.round(active * 10) / 10,
+      highValueBurned: Math.round(burned * setting.highValueFrac * 10) / 10,
+      valueLost: Math.round(burned * setting.highValueFrac * setting.landValuePerHa),
     });
   }
 
@@ -378,7 +388,13 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
   // Costs — seasonal lease replaces capex+opex for this season
   const seasonLease = tiers.reduce((s, t) => s + t.seasonLease, 0);
   const sortieCost = tiers.reduce((s, t) => s + t.sortieCost, 0);
-  const damages = burned * LOSS_PER_HECTARE + structuresLost * 600_000;
+  // Damages: only high-value land + structures count. Wildland between/around
+  // them is acknowledged-but-not-monetized.
+  const highValueHaBurned = burned * setting.highValueFrac;
+  const lowValueHaBurned = burned * (1 - setting.highValueFrac);
+  const landDamages = highValueHaBurned * setting.landValuePerHa;
+  const structureDamages = structuresLost * STRUCTURE_LOSS;
+  const damages = landDamages + structureDamages;
   const totalSeasonCost = seasonLease + sortieCost + damages;
 
   return {
@@ -386,7 +402,10 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
     arrivalMin: Math.round(earliestArrival * 10) / 10,
     containmentMin,
     burnedHa: Math.round(burned * 10) / 10,
+    highValueHaBurned: Math.round(highValueHaBurned * 10) / 10,
     structuresLost,
+    landDamages,
+    structureDamages,
     seasonLease,
     sortieCost,
     damages,
@@ -871,8 +890,8 @@ function FirefightingSim() {
                       </span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <span style={{ color: "var(--color-text-secondary)" }}>Burned</span>
-                      <span style={{ fontWeight: 500 }}>{r.burnedHa} ha</span>
+                      <span style={{ color: "var(--color-text-secondary)" }}>High-value burned</span>
+                      <span style={{ fontWeight: 500 }}>{r.highValueHaBurned} ha</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <span style={{ color: "var(--color-text-secondary)" }}>Structures lost</span>
@@ -891,7 +910,9 @@ function FirefightingSim() {
           {/* Chart */}
           <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "12px 14px 8px", marginBottom: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div style={{ fontSize: 13, fontWeight: 500 }}>Fire footprint over time</div>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>
+                {view === "valueLost" ? "Value at risk burned" : "Fire footprint"} over time
+              </div>
               <div style={{ display: "flex", gap: 6 }}>
                 <button onClick={() => setView("active")}
                         style={{ background: view === "active" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
@@ -899,7 +920,15 @@ function FirefightingSim() {
                 </button>
                 <button onClick={() => setView("burned")}
                         style={{ background: view === "burned" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
-                  Cumulative burned
+                  Total burned
+                </button>
+                <button onClick={() => setView("highValueBurned")}
+                        style={{ background: view === "highValueBurned" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
+                  High-value land
+                </button>
+                <button onClick={() => setView("valueLost")}
+                        style={{ background: view === "valueLost" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
+                  $ at risk
                 </button>
               </div>
             </div>
@@ -908,14 +937,23 @@ function FirefightingSim() {
                 <LineChart data={chartData} margin={{ top: 5, right: 12, bottom: 18, left: 0 }}>
                   <CartesianGrid stroke="var(--color-border-tertiary)" strokeDasharray="2 4" />
                   <XAxis dataKey="t" tick={{ fontSize: 11 }} label={{ value: "minutes since ignition", position: "insideBottom", offset: -8, fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} label={{ value: "hectares", angle: -90, position: "insideLeft", fontSize: 11 }} />
-                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                  <YAxis tick={{ fontSize: 11 }}
+                         tickFormatter={view === "valueLost" ? fmt : undefined}
+                         label={{ value: view === "valueLost" ? "$ value" : "hectares", angle: -90, position: "insideLeft", fontSize: 11 }} />
+                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                           formatter={view === "valueLost" ? fmt : undefined} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
                   {Object.entries(ASSETS).map(([key, a]) => (
                     <Line key={key} type="monotone" dataKey={key} name={a.label} stroke={a.color} strokeWidth={2} dot={false} />
                   ))}
                 </LineChart>
               </ResponsiveContainer>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4, lineHeight: 1.4 }}>
+              {view === "active" && "Hectares actively burning right now (suppressed area drops back to 0)."}
+              {view === "burned" && "Total cumulative hectares burned, including low-value wildland."}
+              {view === "highValueBurned" && `High-value land burned only — ${Math.round(SETTINGS[settingKey].highValueFrac * 100)}% of footprint at this site (${SETTINGS[settingKey].label.toLowerCase()}).`}
+              {view === "valueLost" && `Dollar value of high-value land burned at $${(SETTINGS[settingKey].landValuePerHa / 1000).toFixed(0)}K/ha. Structure losses tallied separately.`}
             </div>
           </div>
 
@@ -933,7 +971,8 @@ function FirefightingSim() {
                     "On-site lease": onSiteLease,
                     "Regional lease": regionalLease,
                     "Sortie cost": r.sortieCost,
-                    "Incident damages": r.damages,
+                    "Land value lost": r.landDamages,
+                    "Structures lost": r.structureDamages,
                   };
                 })} margin={{ top: 5, right: 12, bottom: 5, left: 0 }}>
                   <CartesianGrid stroke="var(--color-border-tertiary)" strokeDasharray="2 4" />
@@ -944,7 +983,8 @@ function FirefightingSim() {
                   <Bar dataKey="On-site lease" stackId="a" fill="#7F77DD" />
                   <Bar dataKey="Regional lease" stackId="a" fill="#AFA9EC" />
                   <Bar dataKey="Sortie cost" stackId="a" fill="#BA7517" />
-                  <Bar dataKey="Incident damages" stackId="a" fill="#D85A30" />
+                  <Bar dataKey="Land value lost" stackId="a" fill="#F09995" />
+                  <Bar dataKey="Structures lost" stackId="a" fill="#D85A30" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -1034,7 +1074,7 @@ function FirefightingSim() {
           </div>
 
           <div style={{ marginTop: 14, fontSize: 11, color: "var(--color-text-tertiary)", lineHeight: 1.6 }}>
-            Seasonal lease costs reflect ~5-month operating leases (May–Sep). On-site = pre-positioned in protected zone; regional = staged at a hub. Firedome priced per coverage unit (305 m radius, ~29 ha) at $10K/month per unit. Damages averaged at $850k/ha burned + $600k/structure lost. Wind ceilings: aircraft 30 mph, drones 30 mph, trucks degrade above 30 mph but operate, Firedome unaffected. Indicative only — not for operational planning.
+            Damages count only high-value land + structures, not raw hectares. Land value varies by site: residential community $50K/ha (20% high-value), wine farm $180K/ha (65% high-value), ski resort $95K/ha (45% high-value). Structures at $600K each. Seasonal lease = 5-month operating lease (May–Sep). Firedome: $10K/month per coverage unit (305 m radius / ~29 ha). Wind ceilings: aircraft 30 mph, drones 30 mph, trucks degrade above 30 mph but operate, Firedome unaffected. Indicative only — not for operational planning.
           </div>
         </div>
       </div>
