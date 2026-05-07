@@ -681,17 +681,6 @@ function FirefightingSim() {
     return `$${Math.round(n)}`;
   };
 
-  const winner = useMemo(() => {
-    const currentWindMph = WIND_LEVELS[windIdx].mph;
-    return Object.entries(results).reduce((best, [k, r]) => {
-      if (k === "firedome") return best;  // Firedome is structural-only — not a standalone option
-      const a = ASSETS[k];
-      if (currentWindMph > a.windCeilingMph) return best;  // Grounded — not really a winner
-      if (!best || r.totalSeasonCost < best.cost) return { key: k, cost: r.totalSeasonCost };
-      return best;
-    }, null);
-  }, [results, windIdx]);
-
   // Wind sweep — re-run simulate at every wind speed from 0 to 60 mph in 2 mph steps
   // to surface where each asset's cost curve breaks.
   const windSweep = useMemo(() => {
@@ -957,98 +946,59 @@ function FirefightingSim() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10, marginBottom: 16 }}>
             {Object.entries(ASSETS).map(([key, a]) => {
               const r = results[key];
-              const isWinner = winner?.key === key;
               const wind = WIND_LEVELS[windIdx];
               const isGrounded = wind.mph > a.windCeilingMph;
 
-              // Firedome card: structural-only framing, no "season total" since it's never deployed alone
+              // Specs line per asset
+              let specs;
+              if (key === "firedome") specs = `${a.rangeM}m radius · ${a.payloadGal} gal/${a.cycleS}s · no wind ceiling`;
+              else if (key === "drones") specs = `${a.payloadL}L payload · ${a.cycleMin}min cycle · ${a.windCeilingMph}mph ceiling`;
+              else if (key === "aircraft") specs = `${a.payloadGal.toLocaleString()} gal/drop · ${a.cycleMin}min cycle · ${a.windCeilingMph}mph ceiling`;
+              else specs = `${a.pumpGpm} gpm pump · ${a.tankGal} gal tank`;
+
+              // Deployed-units summary line
+              let deployedLine;
               if (key === "firedome") {
-                const lease = ASSETS.firedome.positions.onSite.seasonLease * firedomeUnitsNeeded;
-                const structsCovered = Math.round(structuresAtRisk * units.firedome.onSiteCoveragePct / 100);
-                return (
-                  <div key={key} style={{
-                    background: "var(--color-background-secondary)",
-                    border: "0.5px dashed var(--color-border-secondary)",
-                    borderRadius: "var(--border-radius-lg)",
-                    padding: "12px 14px",
-                    position: "relative",
-                  }}>
-                    <div style={{ position: "absolute", top: -10, right: 10, background: a.color, color: "white", fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 500 }}>
-                      Structural layer
-                    </div>
-                    <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ fontSize: 16 }}>{a.icon}</span>
-                      <span>{a.label}</span>
-                    </div>
-                    <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginBottom: 8, lineHeight: 1.35 }}>
-                      {a.rangeM}m radius · {a.payloadGal} gal/{a.cycleS}s · no wind ceiling
-                    </div>
-                    <div style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between" }}>
-                        <span style={{ color: "var(--color-text-secondary)" }}>Coverage</span>
-                        <span style={{ fontWeight: 500 }}>{units.firedome.onSiteCoveragePct}%</span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between" }}>
-                        <span style={{ color: "var(--color-text-secondary)" }}>Units needed</span>
-                        <span style={{ fontWeight: 500 }}>{firedomeUnitsNeeded}</span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between" }}>
-                        <span style={{ color: "var(--color-text-secondary)" }}>Structures protected</span>
-                        <span style={{ fontWeight: 500 }}>{structsCovered}</span>
-                      </div>
-                      <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", marginTop: 4, paddingTop: 6, display: "flex", justifyContent: "space-between" }}>
-                        <span style={{ color: "var(--color-text-secondary)" }}>Season lease</span>
-                        <span style={{ fontWeight: 500, color: a.color }}>{fmt(lease)}</span>
-                      </div>
-                      <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 2, lineHeight: 1.4 }}>
-                        Pair with another asset → see combinations table below
-                      </div>
-                    </div>
-                  </div>
-                );
+                deployedLine = `${units.firedome.onSiteCoveragePct}% coverage · ${firedomeUnitsNeeded} unit${firedomeUnitsNeeded === 1 ? "" : "s"}`;
+              } else {
+                const total = Object.values(units[key]).reduce((s, n) => s + n, 0);
+                deployedLine = `${total} ${a.unitName} deployed`;
               }
 
               return (
                 <div key={key} style={{
                   background: "var(--color-background-primary)",
-                  border: isWinner ? `2px solid ${a.color}` : "0.5px solid var(--color-border-tertiary)",
+                  border: "0.5px solid var(--color-border-tertiary)",
                   borderRadius: "var(--border-radius-lg)",
                   padding: "12px 14px",
                   position: "relative",
                   opacity: isGrounded ? 0.65 : 1,
                 }}>
-                  {isWinner && !isGrounded && (
-                    <div style={{ position: "absolute", top: -10, right: 10, background: a.color, color: "white", fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 500 }}>
-                      Lowest total cost
-                    </div>
-                  )}
                   {isGrounded && (
                     <div style={{ position: "absolute", top: -10, right: 10, background: "#A32D2D", color: "white", fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 500 }}>
                       Grounded · wind &gt; {a.windCeilingMph}mph
                     </div>
                   )}
-                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ fontSize: 16 }}>{a.icon}</span>
                     <span>{a.label}</span>
                   </div>
-                  <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginBottom: 8, lineHeight: 1.35 }}>
-                    {key === "firedome" && `${a.rangeM}m radius · ${a.payloadGal} gal/${a.cycleS}s`}
-                    {key === "drones" && `${a.payloadL}L payload · ${a.cycleMin}min cycle · ${a.windCeilingMph}mph ceiling`}
-                    {key === "aircraft" && `${a.payloadGal.toLocaleString()} gal/drop · ${a.cycleMin}min cycle · ${a.windCeilingMph}mph ceiling`}
-                    {key === "trucks" && `${a.pumpGpm} gpm pump · ${a.tankGal} gal tank`}
+                  <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginBottom: 6, lineHeight: 1.35 }}>
+                    {specs}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--color-text-secondary)", fontWeight: 500, marginBottom: 8, padding: "3px 6px", background: "var(--color-background-secondary)", borderRadius: 4, display: "inline-block" }}>
+                    {deployedLine}
                   </div>
                   <div style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <span style={{ color: "var(--color-text-secondary)" }}>Arrival</span>
-                      <span style={{ fontWeight: 500 }}>{r.arrivalMin} min</span>
-                    </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <span style={{ color: "var(--color-text-secondary)" }}>High-value burned</span>
                       <span style={{ fontWeight: 500 }}>{r.highValueHaBurned} ha</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <span style={{ color: "var(--color-text-secondary)" }}>Structures lost</span>
-                      <span style={{ fontWeight: 500 }}>{r.structuresLost}</span>
+                      <span style={{ fontWeight: 500, color: r.structuresLost === 0 ? "#0F6E56" : r.structuresLost > structuresAtRisk * 0.5 ? "#A32D2D" : "var(--color-text-primary)" }}>
+                        {r.structuresLost} / {structuresAtRisk}
+                      </span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <span style={{ color: "var(--color-text-secondary)" }}>Damages</span>
