@@ -138,7 +138,7 @@ const ASSETS = {
       onSite: {
         label: "Local pad (5 km)",
         travelKm: 5,
-        deployMin: 4,
+        deployMin: 1,                  // autonomous drones can be airborne in ~30s
         seasonLease: 180_000,
         perDeployment: 8_000,
       },
@@ -152,7 +152,7 @@ const ASSETS = {
       regional: {
         label: "Regional hub (40 km)",
         travelKm: 40,
-        deployMin: 6,
+        deployMin: 2,
         seasonLease: 95_000,
         perDeployment: 8_000,
       },
@@ -402,21 +402,23 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
     const highValueBurnedT = Math.min(setting.highValueHa, burnedPastBuffer);
     const wildlandBurnedT = burned - highValueBurnedT;
 
-    // Structures lost progressively as the active fire reaches them.
-    // Structures sit in or adjacent to the high-value zone — they only become
-    // exposed once the fire has crossed the wildland buffer.
-    // Firedome's structural protection applies regardless of suppression status.
-    // Wind damage amplification scales the exposure rate independently of fire spread.
+    // Structures lost progressively as fire dwells in the high-value zone.
+    // Each minute the fire is in the zone, embers ignite a fraction of the
+    // remaining unprotected structures. Rate scales with fire size in zone
+    // and ember/wind activity. Once a structure is "lost" it stays lost.
     const fireInZone = Math.max(0, active - wildlandBuffer);
-    const structuresExposed = Math.min(
-      structuresAtRisk,
-      fireInZone * structuresPerHaInZone * 0.4 * (1 + effectiveEmber) * windDamageMult
-    );
-    let structuresLostNow = structuresExposed;
+    // Per-minute ignition rate (fraction of remaining structures): scales with
+    // fire-in-zone size relative to zone size, modulated by ember + wind.
+    const exposureFrac = Math.min(1, fireInZone / Math.max(setting.highValueHa, 1));
+    const ignitionRatePerMin = exposureFrac * 0.04 * (1 + effectiveEmber) * windDamageMult;
+    // Apply Firedome protection to the rate (not a one-time multiplier).
+    let effectiveRate = ignitionRatePerMin;
     if (asset === "firedome" && firedomeCoveragePct !== undefined) {
-      structuresLostNow *= (1 - (firedomeCoveragePct / 100) * 0.92);
+      effectiveRate *= (1 - (firedomeCoveragePct / 100) * 0.92);
     }
-    structuresLostT = Math.max(structuresLostT, structuresLostNow);
+    const structuresRemaining = structuresAtRisk - structuresLostT;
+    const structuresLostThisMin = structuresRemaining * effectiveRate;
+    structuresLostT = Math.min(structuresAtRisk, structuresLostT + structuresLostThisMin);
 
     timeline.push({
       t,
