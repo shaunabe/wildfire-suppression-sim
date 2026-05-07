@@ -334,65 +334,66 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
   const spreadHaPerMin = 0.4 * wind.spreadMult * moistureFactor * setting.fuelMult;
   const effectiveEmber = wind.ember * setting.emberMult;
 
-  // Timeline
+  // Timeline — track what actually matters: high-value hectares burned and
+  // structures lost over time. Wildland between high-value zones can burn
+  // freely; that's not what we're measuring.
   const timeline = [];
-  let burned = 0;
-  let active = 0;
-  let contained = false;
-  let containmentMin = null;
+  let burned = 0;             // total ha burned (used internally for spread dynamics)
+  let active = 0;             // active fire footprint
+  let structuresPerHaInZone = 1 / setting.densityHaPerStructure;
+  let structuresLostT = 0;    // structures lost to date
+  let suppressionEffective = false;
 
   for (let t = 0; t <= 240; t++) {
-    if (!contained) {
-      // Sum suppression capacity from each tier that has arrived
-      let suppression = 0;
-      for (const tier of tiers) {
-        if (t >= tier.arrivalMin) suppression += tier.cap;
-      }
-
-      if (suppression === 0) {
-        burned += spreadHaPerMin;
-        active = burned;
-      } else {
-        const newGrowth = spreadHaPerMin * (1 + effectiveEmber);
-        const netChange = newGrowth - suppression;
-        active = Math.max(0, active + netChange);
-        if (netChange > 0) burned += netChange;
-        if (active <= 0.5 && containmentMin === null) {
-          contained = true;
-          containmentMin = t;
-        }
-      }
+    let suppression = 0;
+    for (const tier of tiers) {
+      if (t >= tier.arrivalMin) suppression += tier.cap;
     }
+
+    // Fire growth this minute
+    if (suppression === 0) {
+      burned += spreadHaPerMin;
+      active = burned;
+    } else {
+      const newGrowth = spreadHaPerMin * (1 + effectiveEmber);
+      const netChange = newGrowth - suppression;
+      active = Math.max(0, active + netChange);
+      if (netChange > 0) burned += netChange;
+      if (active <= 0.5) suppressionEffective = true;
+    }
+
+    // High-value zone burned this tick
+    const highValueBurnedT = burned * setting.highValueFrac;
+
+    // Structures lost progressively as the active fire grows.
+    // Firedome's structural protection applies regardless of suppression status.
+    const structuresExposed = Math.min(
+      structuresAtRisk,
+      active * structuresPerHaInZone * 0.4 * (1 + effectiveEmber)
+    );
+    let structuresLostNow = structuresExposed;
+    if (asset === "firedome" && firedomeCoveragePct !== undefined) {
+      structuresLostNow *= (1 - (firedomeCoveragePct / 100) * 0.92);
+    }
+    structuresLostT = Math.max(structuresLostT, structuresLostNow);
+
     timeline.push({
       t,
-      burned: Math.round(burned * 10) / 10,
-      active: Math.round(active * 10) / 10,
-      highValueBurned: Math.round(burned * setting.highValueFrac * 10) / 10,
-      valueLost: Math.round(burned * setting.highValueFrac * setting.landValuePerHa),
+      highValueBurned: Math.round(highValueBurnedT * 10) / 10,
+      structuresLost: Math.round(structuresLostT),
+      valueLost: Math.round(highValueBurnedT * setting.landValuePerHa + structuresLostT * STRUCTURE_LOSS),
     });
   }
 
-  if (containmentMin === null) containmentMin = 240;
-
-  const peakActive = Math.max(...timeline.map(p => p.active));
-  const structuresPerHaBurned = 1 / setting.densityHaPerStructure;
-  let structuresLost = Math.min(
-    structuresAtRisk,
-    Math.round(peakActive * structuresPerHaBurned * 0.4 * (1 + effectiveEmber))
-  );
-  // Firedome directly protects covered structures — reduce loss by coverage fraction
-  if (asset === "firedome" && firedomeCoveragePct !== undefined) {
-    const coverFrac = firedomeCoveragePct / 100;
-    structuresLost = Math.round(structuresLost * (1 - coverFrac * 0.92));
-  }
+  const finalHighValueBurned = burned * setting.highValueFrac;
+  let structuresLost = Math.round(structuresLostT);
 
   // Costs — seasonal lease replaces capex+opex for this season
   const seasonLease = tiers.reduce((s, t) => s + t.seasonLease, 0);
   const sortieCost = tiers.reduce((s, t) => s + t.sortieCost, 0);
   // Damages: only high-value land + structures count. Wildland between/around
   // them is acknowledged-but-not-monetized.
-  const highValueHaBurned = burned * setting.highValueFrac;
-  const lowValueHaBurned = burned * (1 - setting.highValueFrac);
+  const highValueHaBurned = finalHighValueBurned;
   const landDamages = highValueHaBurned * setting.landValuePerHa;
   const structureDamages = structuresLost * STRUCTURE_LOSS;
   const damages = landDamages + structureDamages;
@@ -401,8 +402,6 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
   return {
     timeline,
     arrivalMin: Math.round(earliestArrival * 10) / 10,
-    containmentMin,
-    burnedHa: Math.round(burned * 10) / 10,
     highValueHaBurned: Math.round(highValueHaBurned * 10) / 10,
     structuresLost,
     landDamages,
@@ -599,7 +598,7 @@ function FirefightingSim() {
   const [ignitionDist, setIgnitionDist] = useState(25);
   const [structuresAtRisk, setStructuresAtRisk] = useState(120);
   const [settingKey, setSettingKey] = useState("community");
-  const [view, setView] = useState("active");
+  const [view, setView] = useState("valueLost");
 
   const setUnit = (asset, posKey, val) => {
     setUnits(u => ({ ...u, [asset]: { ...u[asset], [posKey]: val } }));
@@ -659,6 +658,7 @@ function FirefightingSim() {
 
   const winner = useMemo(() => {
     return Object.entries(results).reduce((best, [k, r]) => {
+      if (k === "firedome") return best;  // Firedome is structural-only — not a standalone option
       if (!best || r.totalSeasonCost < best.cost) return { key: k, cost: r.totalSeasonCost };
       return best;
     }, null);
@@ -753,9 +753,9 @@ function FirefightingSim() {
 
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)", padding: "16px 4px", maxWidth: 1100, margin: "0 auto" }}>
-      <h1 style={{ fontSize: 22, fontWeight: 500, margin: "0 0 4px" }}>Firefighting approaches at the wildland–urban interface</h1>
+      <h1 style={{ fontSize: 22, fontWeight: 500, margin: "0 0 4px" }}>Protecting structures and high-value land at the wildland–urban interface</h1>
       <p style={{ fontSize: 14, color: "var(--color-text-secondary)", margin: "0 0 20px" }}>
-        Adjust resources, weather, and ignition geometry. Compare time-to-containment, hectares burned, and total incident cost across four suppression strategies.
+        Wildland between high-value zones is allowed to burn — that's how forests stay healthy. The question is what gets through to the structures and the assets that matter. Compare four suppression strategies and a structural protection layer.
       </p>
 
       <div style={{ display: "grid", gridTemplateColumns: "320px minmax(0, 1fr)", gap: 20, alignItems: "start" }}>
@@ -889,6 +889,54 @@ function FirefightingSim() {
               const isWinner = winner?.key === key;
               const wind = WIND_LEVELS[windIdx];
               const isGrounded = wind.mph > a.windCeilingMph;
+
+              // Firedome card: structural-only framing, no "season total" since it's never deployed alone
+              if (key === "firedome") {
+                const lease = ASSETS.firedome.positions.onSite.seasonLease * firedomeUnitsNeeded;
+                const structsCovered = Math.round(structuresAtRisk * units.firedome.onSiteCoveragePct / 100);
+                return (
+                  <div key={key} style={{
+                    background: "var(--color-background-secondary)",
+                    border: "0.5px dashed var(--color-border-secondary)",
+                    borderRadius: "var(--border-radius-lg)",
+                    padding: "12px 14px",
+                    position: "relative",
+                  }}>
+                    <div style={{ position: "absolute", top: -10, right: 10, background: a.color, color: "white", fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 500 }}>
+                      Structural layer
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 16 }}>{a.icon}</span>
+                      <span>{a.label}</span>
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginBottom: 8, lineHeight: 1.35 }}>
+                      {a.rangeM}m radius · {a.payloadGal} gal/{a.cycleS}s · no wind ceiling
+                    </div>
+                    <div style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span style={{ color: "var(--color-text-secondary)" }}>Coverage</span>
+                        <span style={{ fontWeight: 500 }}>{units.firedome.onSiteCoveragePct}%</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span style={{ color: "var(--color-text-secondary)" }}>Units needed</span>
+                        <span style={{ fontWeight: 500 }}>{firedomeUnitsNeeded}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span style={{ color: "var(--color-text-secondary)" }}>Structures protected</span>
+                        <span style={{ fontWeight: 500 }}>{structsCovered}</span>
+                      </div>
+                      <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", marginTop: 4, paddingTop: 6, display: "flex", justifyContent: "space-between" }}>
+                        <span style={{ color: "var(--color-text-secondary)" }}>Season lease</span>
+                        <span style={{ fontWeight: 500, color: a.color }}>{fmt(lease)}</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 2, lineHeight: 1.4 }}>
+                        Pair with another asset → see combinations table below
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
               return (
                 <div key={key} style={{
                   background: "var(--color-background-primary)",
@@ -924,18 +972,16 @@ function FirefightingSim() {
                       <span style={{ fontWeight: 500 }}>{r.arrivalMin} min</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <span style={{ color: "var(--color-text-secondary)" }}>Contained</span>
-                      <span style={{ fontWeight: 500 }}>
-                        {r.containmentMin >= 240 ? "not in 4h" : `${r.containmentMin} min`}
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <span style={{ color: "var(--color-text-secondary)" }}>High-value burned</span>
                       <span style={{ fontWeight: 500 }}>{r.highValueHaBurned} ha</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <span style={{ color: "var(--color-text-secondary)" }}>Structures lost</span>
                       <span style={{ fontWeight: 500 }}>{r.structuresLost}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "var(--color-text-secondary)" }}>Damages</span>
+                      <span style={{ fontWeight: 500 }}>{fmt(r.damages)}</span>
                     </div>
                     <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", marginTop: 4, paddingTop: 6, display: "flex", justifyContent: "space-between" }}>
                       <span style={{ color: "var(--color-text-secondary)" }}>Season total</span>
@@ -951,20 +997,16 @@ function FirefightingSim() {
           <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "12px 14px 8px", marginBottom: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <div style={{ fontSize: 13, fontWeight: 500 }}>
-                {view === "valueLost" ? "Value at risk burned" : "Fire footprint"} over time
+                {view === "valueLost" ? "$ value at risk" : view === "structuresLost" ? "Structures lost" : "High-value land burned"} over time
               </div>
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => setView("active")}
-                        style={{ background: view === "active" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
-                  Active fire
-                </button>
-                <button onClick={() => setView("burned")}
-                        style={{ background: view === "burned" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
-                  Total burned
-                </button>
                 <button onClick={() => setView("highValueBurned")}
                         style={{ background: view === "highValueBurned" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
                   High-value land
+                </button>
+                <button onClick={() => setView("structuresLost")}
+                        style={{ background: view === "structuresLost" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
+                  Structures lost
                 </button>
                 <button onClick={() => setView("valueLost")}
                         style={{ background: view === "valueLost" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
@@ -979,21 +1021,26 @@ function FirefightingSim() {
                   <XAxis dataKey="t" tick={{ fontSize: 11 }} label={{ value: "minutes since ignition", position: "insideBottom", offset: -8, fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }}
                          tickFormatter={view === "valueLost" ? fmt : undefined}
-                         label={{ value: view === "valueLost" ? "$ value" : "hectares", angle: -90, position: "insideLeft", fontSize: 11 }} />
+                         label={{
+                           value: view === "valueLost" ? "$ value" : view === "structuresLost" ? "structures" : "hectares",
+                           angle: -90, position: "insideLeft", fontSize: 11
+                         }} />
                   <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
                            formatter={view === "valueLost" ? fmt : undefined} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  {Object.entries(ASSETS).map(([key, a]) => (
-                    <Line key={key} type="monotone" dataKey={key} name={a.label} stroke={a.color} strokeWidth={2} dot={false} />
-                  ))}
+                  {/* On structures and $ views, include Firedome — its protection effect shows here */}
+                  {Object.entries(ASSETS)
+                    .filter(([k]) => view === "highValueBurned" ? k !== "firedome" : true)
+                    .map(([key, a]) => (
+                      <Line key={key} type="monotone" dataKey={key} name={a.label} stroke={a.color} strokeWidth={2} dot={false} />
+                    ))}
                 </LineChart>
               </ResponsiveContainer>
             </div>
             <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4, lineHeight: 1.4 }}>
-              {view === "active" && "Hectares actively burning right now (suppressed area drops back to 0)."}
-              {view === "burned" && "Total cumulative hectares burned, including low-value wildland."}
-              {view === "highValueBurned" && `High-value land burned only — ${Math.round(SETTINGS[settingKey].highValueFrac * 100)}% of footprint at this site (${SETTINGS[settingKey].label.toLowerCase()}).`}
-              {view === "valueLost" && `Dollar value of land at risk burned at $${(SETTINGS[settingKey].landValuePerHa / 1000).toFixed(0)}K/ha. Firedome doesn't reduce wildland burn — it protects structures only (see combinations panel below). Structure losses tallied separately.`}
+              {view === "highValueBurned" && `High-value land burned only — ${Math.round(SETTINGS[settingKey].highValueFrac * 100)}% of footprint at this site (${SETTINGS[settingKey].label.toLowerCase()}). Wildland between high-value zones is allowed to burn. Firedome excluded — it doesn't suppress wildland fire.`}
+              {view === "structuresLost" && `Structures progressively lost as the active fire grows. Firedome's structural protection holds losses down regardless of suppression status.`}
+              {view === "valueLost" && `Combined dollar value of high-value land burned + structures lost over time. Wildland between zones isn't counted.`}
             </div>
           </div>
 
@@ -1053,8 +1100,8 @@ function FirefightingSim() {
           {/* Calm vs Extreme side-by-side */}
           <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "12px 14px", marginTop: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>Same config under calm vs extreme wind</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
-              {Object.entries(ASSETS).map(([key, a]) => {
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+              {Object.entries(ASSETS).filter(([k]) => k !== "firedome").map(([key, a]) => {
                 const cve = calmVsExtreme[key];
                 const calmCost = cve.calm.totalSeasonCost;
                 const extremeCost = cve.extreme.totalSeasonCost;
