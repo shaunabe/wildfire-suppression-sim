@@ -647,6 +647,7 @@ function FirefightingSim() {
   const [structuresAtRisk, setStructuresAtRisk] = useState(120);
   const [settingKey, setSettingKey] = useState("community");
   const [view, setView] = useState("valueLost");
+  const [windSweepView, setWindSweepView] = useState("structures");
 
   const setUnit = (asset, posKey, val) => {
     setUnits(u => ({ ...u, [asset]: { ...u[asset], [posKey]: val } }));
@@ -725,7 +726,8 @@ function FirefightingSim() {
           settingKey,
           firedomeCoveragePct: key === "firedome" ? units.firedome.onSiteCoveragePct : undefined,
         });
-        row[key] = Math.round(r.totalSeasonCost / 100_000) * 100_000;  // round for cleaner chart
+        row[key] = Math.round(r.totalSeasonCost / 100_000) * 100_000;
+        row[`${key}_structures`] = r.structuresLost;
       }
       points.push(row);
     }
@@ -1174,9 +1176,21 @@ function FirefightingSim() {
 
           {/* Wind sweep chart */}
           <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "12px 14px", marginTop: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Total season cost vs wind speed</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>{windSweepView === "cost" ? "Total season cost" : "Structures lost"} vs wind speed</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setWindSweepView("structures")}
+                        style={{ background: windSweepView === "structures" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
+                  Structures lost
+                </button>
+                <button onClick={() => setWindSweepView("cost")}
+                        style={{ background: windSweepView === "cost" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
+                  Season cost
+                </button>
+              </div>
+            </div>
             <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 8 }}>
-              Holding all other variables constant. Watch what happens at the 30 mph threshold.
+              Holding all other variables constant. Watch what happens at the 25–30 mph thresholds.
             </div>
             <div style={{ height: 280 }}>
               <ResponsiveContainer width="100%" height="100%">
@@ -1184,21 +1198,25 @@ function FirefightingSim() {
                   <CartesianGrid stroke="var(--color-border-tertiary)" strokeDasharray="2 4" />
                   <XAxis dataKey="mph" tick={{ fontSize: 11 }}
                          label={{ value: "wind speed (mph)", position: "insideBottom", offset: -10, fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt}
-                         label={{ value: "season cost", angle: -90, position: "insideLeft", fontSize: 11 }} />
-                  <Tooltip formatter={fmt} contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                  <YAxis tick={{ fontSize: 11 }}
+                         tickFormatter={windSweepView === "cost" ? fmt : undefined}
+                         label={{ value: windSweepView === "cost" ? "season cost" : "structures lost", angle: -90, position: "insideLeft", fontSize: 11 }} />
+                  <Tooltip formatter={windSweepView === "cost" ? fmt : undefined} contentStyle={{ fontSize: 12, borderRadius: 8 }}
                            labelFormatter={mph => `${mph} mph`} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  {/* Vertical reference line at 30 mph wind ceiling */}
                   {Object.entries(ASSETS).map(([key, a]) => (
-                    <Line key={key} type="monotone" dataKey={key} name={a.label}
+                    <Line key={key} type="monotone"
+                          dataKey={windSweepView === "cost" ? key : `${key}_structures`}
+                          name={a.label}
                           stroke={a.color} strokeWidth={2} dot={false} />
                   ))}
                 </LineChart>
               </ResponsiveContainer>
             </div>
             <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6, lineHeight: 1.5 }}>
-              Drone and aircraft cost curves jump at ~30 mph because they're grounded — they keep paying the lease but stop contributing suppression, so damages dominate. Firedome stays nearly flat: it doesn't fight the fire, it protects what's inside its radius. Trucks degrade gradually but never go to zero.
+              {windSweepView === "cost"
+                ? "Drone and aircraft cost curves jump at their wind ceilings (25 / 30 mph) — they keep paying the lease but contribute zero suppression. Firedome's curve is the flattest because its loss is bounded by uncovered structures + small wildland zone, not by fire size. Trucks degrade gradually but never go to zero."
+                : "Firedome's structures-lost curve is bounded — coverage % caps total possible loss. Other assets show structures lost climbing as wind speed rises through their effective ranges. Above each asset's wind ceiling, structures lost converges toward 'all of them.'"}
             </div>
           </div>
 
