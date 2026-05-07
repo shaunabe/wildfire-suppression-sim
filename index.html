@@ -1075,17 +1075,15 @@ function FirefightingSim() {
                   <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
                            formatter={view === "valueLost" ? fmt : undefined} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  {/* On structures and $ views, include Firedome — its protection effect shows here */}
-                  {Object.entries(ASSETS)
-                    .filter(([k]) => view === "highValueBurned" ? k !== "firedome" : true)
-                    .map(([key, a]) => (
+                  {/* Firedome on all views — its line shows where it helps vs doesn't */}
+                  {Object.entries(ASSETS).map(([key, a]) => (
                       <Line key={key} type="monotone" dataKey={key} name={a.label} stroke={a.color} strokeWidth={2} dot={false} />
                     ))}
                 </LineChart>
               </ResponsiveContainer>
             </div>
             <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4, lineHeight: 1.4 }}>
-              {view === "highValueBurned" && `High-value land burned at this site — capped at ${SETTINGS[settingKey].highValueHa} ha total (${SETTINGS[settingKey].label.toLowerCase()}). Fire must grow past the wildland buffer before any high-value land burns. Wildland is not counted. Firedome excluded — it doesn't suppress wildland fire.`}
+              {view === "highValueBurned" && `High-value land burned at this site — capped at ${SETTINGS[settingKey].highValueHa} ha total (${SETTINGS[settingKey].label.toLowerCase()}). Fire must grow past the wildland buffer before any high-value land burns. Firedome's line tracks 'no land suppression' — it doesn't protect cultivated land. Wildland is not counted.`}
               {view === "structuresLost" && `Structures progressively lost as the active fire grows. Firedome's structural protection holds losses down regardless of suppression status.`}
               {view === "valueLost" && `Combined dollar value of high-value land burned + structures lost over time. Wildland between zones isn't counted.`}
             </div>
@@ -1147,8 +1145,8 @@ function FirefightingSim() {
           {/* Calm vs Extreme side-by-side */}
           <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "12px 14px", marginTop: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>Same config under calm vs extreme wind</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
-              {Object.entries(ASSETS).filter(([k]) => k !== "firedome").map(([key, a]) => {
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+              {Object.entries(ASSETS).map(([key, a]) => {
                 const cve = calmVsExtreme[key];
                 const calmCost = cve.calm.totalSeasonCost;
                 const extremeCost = cve.extreme.totalSeasonCost;
