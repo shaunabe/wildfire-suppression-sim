@@ -127,8 +127,8 @@ const ASSETS = {
     icon: "🛸",
     color: "#1D9E75",
     unitName: "drones",
-    unitHelp: "Each unit = one heavy-lift suppression drone. ~200 L payload, 5–8 min cycle time, 15–25 min flight endurance per charge. Grounded above ~25 mph wind — precision drops require stable hover.",
-    suppressionRate: 1.6,
+    unitHelp: "Each unit = one heavy-lift suppression drone. ~200 L payload, 6 min cycle = ~9 gpm sustained per drone (~5% of an engine's flow). Strength is rapid response and precision drops, not sustained fire suppression. Need swarms (10+) to match engine output. Grounded above ~25 mph wind.",
+    suppressionRate: 0.4,
     payloadL: 200,
     cycleMin: 6,
     windCeilingMph: 25,
@@ -1044,13 +1044,9 @@ function FirefightingSim() {
           <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "12px 14px 8px", marginBottom: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <div style={{ fontSize: 13, fontWeight: 500 }}>
-                {view === "valueLost" ? "$ value at risk" : view === "structuresLost" ? "Structures lost" : "High-value land burned"} over time
+                {view === "valueLost" ? "$ value at risk" : "Structures lost"} over time
               </div>
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => setView("highValueBurned")}
-                        style={{ background: view === "highValueBurned" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
-                  High-value land
-                </button>
                 <button onClick={() => setView("structuresLost")}
                         style={{ background: view === "structuresLost" ? "var(--color-background-secondary)" : "transparent", fontSize: 12, padding: "4px 10px" }}>
                   Structures lost
@@ -1069,23 +1065,21 @@ function FirefightingSim() {
                   <YAxis tick={{ fontSize: 11 }}
                          tickFormatter={view === "valueLost" ? fmt : undefined}
                          label={{
-                           value: view === "valueLost" ? "$ value" : view === "structuresLost" ? "structures" : "hectares",
+                           value: view === "valueLost" ? "$ value" : "structures",
                            angle: -90, position: "insideLeft", fontSize: 11
                          }} />
                   <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
                            formatter={view === "valueLost" ? fmt : undefined} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  {/* Firedome on all views — its line shows where it helps vs doesn't */}
                   {Object.entries(ASSETS).map(([key, a]) => (
-                      <Line key={key} type="monotone" dataKey={key} name={a.label} stroke={a.color} strokeWidth={2} dot={false} />
-                    ))}
+                    <Line key={key} type="monotone" dataKey={key} name={a.label} stroke={a.color} strokeWidth={2} dot={false} />
+                  ))}
                 </LineChart>
               </ResponsiveContainer>
             </div>
             <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4, lineHeight: 1.4 }}>
-              {view === "highValueBurned" && `High-value land burned at this site — capped at ${SETTINGS[settingKey].highValueHa} ha total (${SETTINGS[settingKey].label.toLowerCase()}). Fire must grow past the wildland buffer before any high-value land burns. Firedome's line tracks 'no land suppression' — it doesn't protect cultivated land. Wildland is not counted.`}
-              {view === "structuresLost" && `Structures progressively lost as the active fire grows. Firedome's structural protection holds losses down regardless of suppression status.`}
-              {view === "valueLost" && `Combined dollar value of high-value land burned + structures lost over time. Wildland between zones isn't counted.`}
+              {view === "structuresLost" && `Structures progressively lost as fire reaches them. Firedome's coverage holds losses near zero regardless of suppression status. Other assets prevent losses by suppressing the fire before it reaches the high-value zone.`}
+              {view === "valueLost" && `Combined dollar value of high-value land burned + structures lost over time. The chart that matters most for buyers — what does this strategy actually cost in damages?`}
             </div>
           </div>
 
