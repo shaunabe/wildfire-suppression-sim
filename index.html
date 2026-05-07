@@ -230,9 +230,9 @@ const SETTINGS = {
     densityHaPerStructure: 0.15,
     emberMult: 1.4,
     fuelMult: 0.9,
-    landValuePerHa: 50_000,        // backyards, mostly low-value brush between homes
-    highValueFrac: 0.20,           // 20% of land area is "high value" (lawns/landscaping near homes)
-    blurb: "Tight suburban cluster. Embers jump roof-to-roof; once one home goes, neighbors follow within minutes.",
+    landValuePerHa: 50_000,        // landscaping, lawns near homes
+    highValueHa: 18,                // ~18 ha of managed yards/landscaping
+    blurb: "Tight suburban cluster. Embers jump roof-to-roof; once one home goes, neighbors follow within minutes. Most value is in the structures themselves.",
   },
   wineFarm: {
     label: "Wine farm / vineyard",
@@ -240,9 +240,9 @@ const SETTINGS = {
     densityHaPerStructure: 8,
     emberMult: 0.4,
     fuelMult: 1.3,
-    landValuePerHa: 180_000,       // producing vineyard land, plus 3-5yr replant cycle to next harvest
-    highValueFrac: 0.65,           // 65% planted vines, rest is grass/woodland
-    blurb: "Sparse buildings across a large estate. The vineyard rows themselves are the asset — replanting after burn means 3–5 years to first harvest.",
+    landValuePerHa: 220_000,       // producing vineyard, 3-5 yr replant cycle
+    highValueHa: 60,                // typical estate vineyard footprint
+    blurb: "Sparse buildings across a large estate. Vineyards (~60 ha) are the asset. Surrounding hills are wildland — they can burn freely. The question is whether fire reaches the vines.",
   },
   skiResort: {
     label: "Ski resort",
@@ -250,9 +250,9 @@ const SETTINGS = {
     densityHaPerStructure: 1.5,
     emberMult: 0.9,
     fuelMult: 1.5,
-    landValuePerHa: 95_000,        // managed timber + ski run infrastructure
-    highValueFrac: 0.45,           // ski runs + groomed timber zones
-    blurb: "Clustered base village surrounded by conifer forest. Burned timber takes decades to recover; ski runs need restoration before reopening.",
+    landValuePerHa: 110_000,       // groomed runs + lift infrastructure + managed timber
+    highValueHa: 80,                // ski runs + lift corridors
+    blurb: "Base village + ski runs and lift corridors (~80 ha). Surrounding national forest is wildland. Burned ski runs need restoration before reopening; burned wildland is just forest succession.",
   },
 };
 
@@ -338,6 +338,15 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
   const activeTiers = tiers.filter(t => !t.grounded && t.cap > 0);
   const earliestArrival = activeTiers.length ? Math.min(...activeTiers.map(t => t.arrivalMin)) : 999;
 
+  // High-value zone geometry: the zone is a finite area (setting.highValueHa).
+  // Fire ignites in the surrounding wildland and must grow large enough to reach
+  // the zone edge before any high-value land starts burning. We model this with
+  // a "buffer" — burned hectares of wildland that have to accumulate before the
+  // fire perimeter touches the high-value zone.
+  // Roughly: zone is a circle, fire is a circle, both centered ~near the structures.
+  // The wildland buffer is the gap between ignition point and the zone edge.
+  const wildlandBuffer = Math.max(5, setting.highValueHa * 0.4);
+
   // Fire growth
   const moistureFactor = 1.6 - fuelMoisture / 100;
   const spreadHaPerMin = 0.4 * wind.spreadMult * moistureFactor * setting.fuelMult;
@@ -386,15 +395,22 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
       if (active <= 0.5) suppressionEffective = true;
     }
 
-    // High-value zone burned this tick
-    const highValueBurnedT = burned * setting.highValueFrac;
+    // High-value zone burned this tick:
+    // Fire has to grow past the wildland buffer before it reaches the zone.
+    // Once inside, accumulates up to the zone's finite size.
+    const burnedPastBuffer = Math.max(0, burned - wildlandBuffer);
+    const highValueBurnedT = Math.min(setting.highValueHa, burnedPastBuffer);
+    const wildlandBurnedT = burned - highValueBurnedT;
 
-    // Structures lost progressively as the active fire grows.
+    // Structures lost progressively as the active fire reaches them.
+    // Structures sit in or adjacent to the high-value zone — they only become
+    // exposed once the fire has crossed the wildland buffer.
     // Firedome's structural protection applies regardless of suppression status.
     // Wind damage amplification scales the exposure rate independently of fire spread.
+    const fireInZone = Math.max(0, active - wildlandBuffer);
     const structuresExposed = Math.min(
       structuresAtRisk,
-      active * structuresPerHaInZone * 0.4 * (1 + effectiveEmber) * windDamageMult
+      fireInZone * structuresPerHaInZone * 0.4 * (1 + effectiveEmber) * windDamageMult
     );
     let structuresLostNow = structuresExposed;
     if (asset === "firedome" && firedomeCoveragePct !== undefined) {
@@ -410,7 +426,8 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
     });
   }
 
-  const finalHighValueBurned = burned * setting.highValueFrac;
+  const finalHighValueBurned = Math.min(setting.highValueHa, Math.max(0, burned - wildlandBuffer));
+  const finalWildlandBurned = burned - finalHighValueBurned;
   let structuresLost = Math.round(structuresLostT);
 
   // Costs — seasonal lease replaces capex+opex for this season
@@ -428,6 +445,7 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
     timeline,
     arrivalMin: Math.round(earliestArrival * 10) / 10,
     highValueHaBurned: Math.round(highValueHaBurned * 10) / 10,
+    wildlandBurnedHa: Math.round(finalWildlandBurned * 10) / 10,
     structuresLost,
     landDamages,
     structureDamages,
@@ -992,7 +1010,13 @@ function FirefightingSim() {
                   <div style={{ display: "grid", gap: 6, fontSize: 12 }}>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <span style={{ color: "var(--color-text-secondary)" }}>High-value burned</span>
-                      <span style={{ fontWeight: 500 }}>{r.highValueHaBurned} ha</span>
+                      <span style={{ fontWeight: 500, color: r.highValueHaBurned === 0 ? "#0F6E56" : r.highValueHaBurned >= SETTINGS[settingKey].highValueHa * 0.7 ? "#A32D2D" : "var(--color-text-primary)" }}>
+                        {r.highValueHaBurned} / {SETTINGS[settingKey].highValueHa} ha
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "var(--color-text-tertiary)", fontSize: 10 }}>Wildland (not counted)</span>
+                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{r.wildlandBurnedHa} ha</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <span style={{ color: "var(--color-text-secondary)" }}>Structures lost</span>
@@ -1059,7 +1083,7 @@ function FirefightingSim() {
               </ResponsiveContainer>
             </div>
             <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4, lineHeight: 1.4 }}>
-              {view === "highValueBurned" && `High-value land burned only — ${Math.round(SETTINGS[settingKey].highValueFrac * 100)}% of footprint at this site (${SETTINGS[settingKey].label.toLowerCase()}). Wildland between high-value zones is allowed to burn. Firedome excluded — it doesn't suppress wildland fire.`}
+              {view === "highValueBurned" && `High-value land burned at this site — capped at ${SETTINGS[settingKey].highValueHa} ha total (${SETTINGS[settingKey].label.toLowerCase()}). Fire must grow past the wildland buffer before any high-value land burns. Wildland is not counted. Firedome excluded — it doesn't suppress wildland fire.`}
               {view === "structuresLost" && `Structures progressively lost as the active fire grows. Firedome's structural protection holds losses down regardless of suppression status.`}
               {view === "valueLost" && `Combined dollar value of high-value land burned + structures lost over time. Wildland between zones isn't counted.`}
             </div>
@@ -1233,7 +1257,7 @@ function FirefightingSim() {
           </div>
 
           <div style={{ marginTop: 14, fontSize: 11, color: "var(--color-text-tertiary)", lineHeight: 1.6 }}>
-            Damages count only high-value land + structures, not raw hectares. Land value varies by site: residential community $50K/ha (20% high-value), wine farm $180K/ha (65% high-value), ski resort $95K/ha (45% high-value). Structures at $600K each. Seasonal lease = 5-month operating lease (May–Sep). Firedome: $10K/month per coverage unit (305 m radius / ~29 ha). Wind ceilings: aircraft 30 mph, drones 30 mph, trucks degrade above 30 mph but operate, Firedome unaffected. Indicative only — not for operational planning.
+            Damages count only high-value cultivated/managed land + structures. Wildland (forest, brush, grass) is not monetized — burning is acknowledged as part of natural fire ecology. High-value zone has finite area: residential community 18 ha at $50K/ha (lawns + landscaping), wine farm 60 ha at $220K/ha (vineyards, 3–5yr replant cycle), ski resort 80 ha at $110K/ha (groomed runs + lift corridors + managed timber). Fire must grow past the wildland buffer before reaching the high-value zone. Structures at $600K each (rises with wind to ~$900K via radiant heat / partial losses). Wind-driven structure exposure scales 1× → 4.5× from 15 → 70 mph (per IBHS ember/ignition data). Seasonal lease = 5-month operating lease (May–Sep). Firedome: $10K/month per coverage unit (305 m radius / ~29 ha). Wind ceilings: aircraft 30 mph, drones 25 mph (with degradation from 15 mph), trucks degrade above 30 mph but operate, Firedome unaffected. Indicative only — not for operational planning.
           </div>
         </div>
       </div>
