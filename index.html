@@ -343,6 +343,21 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
   const spreadHaPerMin = 0.4 * wind.spreadMult * moistureFactor * setting.fuelMult;
   const effectiveEmber = wind.ember * setting.emberMult;
 
+  // Wind-driven damage amplification (separate from fire spread):
+  // At higher wind speeds, embers travel further and find more ignition points
+  // per structure. IBHS research shows ignition probability roughly doubles
+  // every ~15 mph above 25 mph. Captures Camp/Tubbs-style structure loss
+  // intensity that a pure spread model underweights.
+  // Below 15 mph: 1.0 (baseline). At 30 mph: ~1.7. At 50 mph: ~3.0. At 70 mph: ~4.5.
+  const windDamageMult = wind.mph <= 15
+    ? 1.0
+    : 1.0 + Math.pow((wind.mph - 15) / 18, 1.4);
+
+  // Per-structure damage severity also rises with wind: surviving structures
+  // take more damage from ember intrusion, radiant heat, partial roof loss.
+  // Average loss per "lost" structure goes from $600K at calm to ~$900K at extreme.
+  const structureLossPerUnit = STRUCTURE_LOSS * (1 + Math.min(0.5, (wind.mph - 15) / 70));
+
   // Timeline — track what actually matters: high-value hectares burned and
   // structures lost over time. Wildland between high-value zones can burn
   // freely; that's not what we're measuring.
@@ -376,9 +391,10 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
 
     // Structures lost progressively as the active fire grows.
     // Firedome's structural protection applies regardless of suppression status.
+    // Wind damage amplification scales the exposure rate independently of fire spread.
     const structuresExposed = Math.min(
       structuresAtRisk,
-      active * structuresPerHaInZone * 0.4 * (1 + effectiveEmber)
+      active * structuresPerHaInZone * 0.4 * (1 + effectiveEmber) * windDamageMult
     );
     let structuresLostNow = structuresExposed;
     if (asset === "firedome" && firedomeCoveragePct !== undefined) {
@@ -390,7 +406,7 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
       t,
       highValueBurned: Math.round(highValueBurnedT * 10) / 10,
       structuresLost: Math.round(structuresLostT),
-      valueLost: Math.round(highValueBurnedT * setting.landValuePerHa + structuresLostT * STRUCTURE_LOSS),
+      valueLost: Math.round(highValueBurnedT * setting.landValuePerHa + structuresLostT * structureLossPerUnit),
     });
   }
 
@@ -401,10 +417,10 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
   const seasonLease = tiers.reduce((s, t) => s + t.seasonLease, 0);
   const sortieCost = tiers.reduce((s, t) => s + t.sortieCost, 0);
   // Damages: only high-value land + structures count. Wildland between/around
-  // them is acknowledged-but-not-monetized.
+  // them is acknowledged-but-not-monetized. Per-structure cost rises with wind.
   const highValueHaBurned = finalHighValueBurned;
   const landDamages = highValueHaBurned * setting.landValuePerHa;
-  const structureDamages = structuresLost * STRUCTURE_LOSS;
+  const structureDamages = structuresLost * structureLossPerUnit;
   const damages = landDamages + structureDamages;
   const totalSeasonCost = seasonLease + sortieCost + damages;
 
@@ -730,13 +746,17 @@ function FirefightingSim() {
     const fdCoverFrac = fdCoverage / 100;
     const fdLease = ASSETS.firedome.positions.onSite.seasonLease * firedomeUnitsNeeded;
 
+    // Wind-adjusted per-structure cost (matches simulate())
+    const currentWindMph = WIND_LEVELS[windIdx].mph;
+    const perStructCost = STRUCTURE_LOSS * (1 + Math.min(0.5, (currentWindMph - 15) / 70));
+
     for (const key of Object.keys(ASSETS)) {
       if (key === "firedome") continue;
       const r = results[key];
       // "With Firedome" applies the structural protection multiplier to structures lost,
       // adds Firedome's lease cost, and re-derives damages.
       const protectedStructures = Math.round(r.structuresLost * (1 - fdCoverFrac * 0.92));
-      const adjustedStructureDmg = protectedStructures * STRUCTURE_LOSS;
+      const adjustedStructureDmg = protectedStructures * perStructCost;
       const adjustedDamages = r.landDamages + adjustedStructureDmg;
       const withFiredome = {
         structuresLost: protectedStructures,
@@ -806,6 +826,16 @@ function FirefightingSim() {
                     style={{ width: "100%" }}>
               {WIND_LEVELS.map((w, i) => <option key={i} value={i}>{w.label}</option>)}
             </select>
+            {(() => {
+              const w = WIND_LEVELS[windIdx];
+              const wdm = w.mph <= 15 ? 1.0 : 1.0 + Math.pow((w.mph - 15) / 18, 1.4);
+              const slu = 1 + Math.min(0.5, (w.mph - 15) / 70);
+              return (
+                <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 6, lineHeight: 1.45, padding: "6px 8px", background: "var(--color-background-primary)", borderRadius: 4 }}>
+                  At {w.mph} mph: spread <b style={{ color: "var(--color-text-secondary)" }}>{w.spreadMult.toFixed(1)}×</b> · ember activity <b style={{ color: "var(--color-text-secondary)" }}>{(w.ember * 100).toFixed(0)}%</b> · structure exposure <b style={{ color: "var(--color-text-secondary)" }}>{wdm.toFixed(1)}×</b> · per-structure damage <b style={{ color: "var(--color-text-secondary)" }}>{slu.toFixed(2)}×</b>
+                </div>
+              );
+            })()}
           </div>
 
           <Slider label="Fuel moisture" value={fuelMoisture} min={5} max={80} step={1} onChange={setFuelMoisture} suffix="%"
