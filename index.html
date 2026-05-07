@@ -127,11 +127,11 @@ const ASSETS = {
     icon: "🛸",
     color: "#1D9E75",
     unitName: "drones",
-    unitHelp: "Each unit = one heavy-lift suppression drone. ~200 L payload, 5–8 min cycle time, 15–25 min flight endurance per charge. Grounded above ~30 mph wind.",
+    unitHelp: "Each unit = one heavy-lift suppression drone. ~200 L payload, 5–8 min cycle time, 15–25 min flight endurance per charge. Grounded above ~25 mph wind — precision drops require stable hover.",
     suppressionRate: 1.6,
     payloadL: 200,
     cycleMin: 6,
-    windCeilingMph: 30,
+    windCeilingMph: 25,
     nightCapable: true,
     description: "Autonomous heavy-lift suppression drones",
     positions: {
@@ -290,8 +290,17 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
   const setting = SETTINGS[settingKey];
 
   // Wind ceiling: above asset's ceiling, suppression is zero (grounded).
-  // For ground assets, apply a soft penalty above the wind penalty threshold.
+  // Approaching the ceiling, suppression degrades smoothly — drones lose
+  // precision in turbulence, aircraft fight with smoke/visibility.
+  // Degradation begins at 60% of the ceiling and falls linearly to zero.
   const grounded = wind.mph > a.windCeilingMph;
+  let windEffMult = 1.0;
+  if (!grounded && a.windCeilingMph < 100) {
+    const degradeStart = a.windCeilingMph * 0.6;
+    if (wind.mph > degradeStart) {
+      windEffMult = Math.max(0, 1 - (wind.mph - degradeStart) / (a.windCeilingMph - degradeStart));
+    }
+  }
   const groundPenalty = a.windPenaltyAbove && wind.mph > a.windPenaltyAbove
     ? Math.max(0.3, 1 - (wind.mph - a.windPenaltyAbove) / 50)
     : 1.0;
@@ -310,8 +319,8 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
     const arrivalMin = travelMin + pos.deployMin;
 
     const effUnits = Math.pow(u, 0.85);
-    // HARD wind ceiling: grounded → zero. Otherwise apply soft penalty for ground assets.
-    const cap = grounded ? 0 : a.suppressionRate * effUnits * groundPenalty;
+    // HARD wind ceiling: grounded → zero. Otherwise apply degradation curve.
+    const cap = grounded ? 0 : a.suppressionRate * effUnits * groundPenalty * windEffMult;
 
     return {
       posKey,
@@ -1219,7 +1228,6 @@ function FirefightingSim() {
     </div>
   );
 }
-
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<FirefightingSim />);
