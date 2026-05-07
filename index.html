@@ -682,12 +682,15 @@ function FirefightingSim() {
   };
 
   const winner = useMemo(() => {
+    const currentWindMph = WIND_LEVELS[windIdx].mph;
     return Object.entries(results).reduce((best, [k, r]) => {
       if (k === "firedome") return best;  // Firedome is structural-only — not a standalone option
+      const a = ASSETS[k];
+      if (currentWindMph > a.windCeilingMph) return best;  // Grounded — not really a winner
       if (!best || r.totalSeasonCost < best.cost) return { key: k, cost: r.totalSeasonCost };
       return best;
     }, null);
-  }, [results]);
+  }, [results, windIdx]);
 
   // Wind sweep — re-run simulate at every wind speed from 0 to 60 mph in 2 mph steps
   // to surface where each asset's cost curve breaks.
@@ -921,6 +924,35 @@ function FirefightingSim() {
 
         {/* Right column */}
         <div>
+          {(() => {
+            const wind = WIND_LEVELS[windIdx];
+            const groundedAssets = Object.entries(ASSETS).filter(([k, a]) => k !== "firedome" && wind.mph > a.windCeilingMph);
+            const wildlandAssetCount = Object.keys(ASSETS).length - 1;  // exclude firedome
+            const allGrounded = groundedAssets.length === wildlandAssetCount;
+            const someGrounded = groundedAssets.length > 0;
+            if (!someGrounded) return null;
+            return (
+              <div style={{
+                background: allGrounded ? "#FCEBEB" : "#FAEEDA",
+                border: `0.5px solid ${allGrounded ? "#F09595" : "#FAC775"}`,
+                borderRadius: "var(--border-radius-md)",
+                padding: "10px 14px",
+                marginBottom: 12,
+                fontSize: 12,
+                lineHeight: 1.5,
+                color: allGrounded ? "#501313" : "#412402",
+              }}>
+                <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 2 }}>
+                  {allGrounded
+                    ? `All wildland-suppression assets grounded at ${wind.mph} mph wind`
+                    : `${groundedAssets.map(([k, a]) => a.label).join(" and ")} grounded at ${wind.mph} mph`}
+                </div>
+                {allGrounded
+                  ? "No fixed-wing or rotor-based suppression is operating. The only working defenses are Firedome (structural protection) and ground crews. The 'season total' figures below reflect lease costs paid for capability that cannot be deployed in these conditions — see the combinations panel below for realistic deployment options."
+                  : "These assets keep paying their lease but contribute zero suppression in this wind. Their cost figures below reflect that gap."}
+              </div>
+            );
+          })()}
           {/* Stat cards per asset */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10, marginBottom: 16 }}>
             {Object.entries(ASSETS).map(([key, a]) => {
