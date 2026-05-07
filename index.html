@@ -407,18 +407,21 @@ function simulate({ asset, units, windIdx, windOverride, fuelMoisture, ignitionD
     // remaining unprotected structures. Rate scales with fire size in zone
     // and ember/wind activity. Once a structure is "lost" it stays lost.
     const fireInZone = Math.max(0, active - wildlandBuffer);
-    // Per-minute ignition rate (fraction of remaining structures): scales with
-    // fire-in-zone size relative to zone size, modulated by ember + wind.
     const exposureFrac = Math.min(1, fireInZone / Math.max(setting.highValueHa, 1));
     const ignitionRatePerMin = exposureFrac * 0.04 * (1 + effectiveEmber) * windDamageMult;
-    // Apply Firedome protection to the rate (not a one-time multiplier).
-    let effectiveRate = ignitionRatePerMin;
+
+    // Firedome protects covered structures from loss entirely (with small leakage).
+    // Compute the maximum structures that CAN be lost, then accumulate within that cap.
+    let maxStructuresAtRisk = structuresAtRisk;
     if (asset === "firedome" && firedomeCoveragePct !== undefined) {
-      effectiveRate *= (1 - (firedomeCoveragePct / 100) * 0.92);
+      const coverFrac = firedomeCoveragePct / 100;
+      const protectedStructures = structuresAtRisk * coverFrac * 0.92;  // 8% leakage
+      maxStructuresAtRisk = structuresAtRisk - protectedStructures;
     }
-    const structuresRemaining = structuresAtRisk - structuresLostT;
-    const structuresLostThisMin = structuresRemaining * effectiveRate;
-    structuresLostT = Math.min(structuresAtRisk, structuresLostT + structuresLostThisMin);
+
+    const structuresRemaining = Math.max(0, maxStructuresAtRisk - structuresLostT);
+    const structuresLostThisMin = structuresRemaining * ignitionRatePerMin;
+    structuresLostT = Math.min(maxStructuresAtRisk, structuresLostT + structuresLostThisMin);
 
     timeline.push({
       t,
