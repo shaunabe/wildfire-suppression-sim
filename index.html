@@ -94,8 +94,8 @@ const ASSETS = {
     icon: "🏠",
     color: "#7F77DD",
     unitName: "coverage units",
-    unitHelp: "Each unit covers a 1,000 ft (305 m) radius zone — that's ~29 hectares. Number of structures covered depends on density: ~195 in a tight residential community, ~20 at a ski resort, ~4 on a wine farm. 10 gal payload every 10 s. Lease is $10K/month per unit ($50K for the 5-month season).",
-    suppressionRate: 0.5,
+    unitHelp: "Each unit covers a 1,000 ft (305 m) radius zone (~29 ha). Protects structures inside the zone from ember ignition; does NOT suppress wildland fire. Pair with another asset for full coverage. $10K/month per unit.",
+    suppressionRate: 0.05,         // negligible wildland suppression — Firedome protects structures, not land
     rangeM: 305,
     coverageHa: 29.2,
     payloadGal: 10,
@@ -103,20 +103,21 @@ const ASSETS = {
     windCeilingMph: 999,
     nightCapable: true,
     description: "Property-level autonomous perimeter suppression",
-    pricedBy: "coverage",  // signals UI to show coverage % slider not unit count
+    pricedBy: "coverage",
+    isStructuralOnly: true,        // signals UI that this is a structural protection layer, not wildland suppression
     positions: {
       onSite: {
         label: "Installed in coverage zone",
         travelKm: 0,
         deployMin: 0.3,
-        seasonLease: 50_000,        // $10K/month × 5 months
+        seasonLease: 50_000,
         perDeployment: 0,
       },
       regional: {
         label: "Mobile rapid-deploy unit",
         travelKm: 12,
         deployMin: 6,
-        seasonLease: 75_000,        // higher: trailer-mounted with travel
+        seasonLease: 75_000,
         perDeployment: 1_500,
       },
     },
@@ -711,6 +712,45 @@ function FirefightingSim() {
     return out;
   }, [units, firedomeUnitsNeeded, fuelMoisture, ignitionDist, structuresAtRisk, settingKey]);
 
+  // Combinations: each wildland-suppression asset, with and without Firedome layered on top.
+  // Firedome's value is purely structural protection — it reduces structure loss and adds
+  // its season-lease cost. Doesn't change hectares burned or containment time.
+  const combinations = useMemo(() => {
+    const out = {};
+    const fdCoverage = units.firedome.onSiteCoveragePct;
+    const fdCoverFrac = fdCoverage / 100;
+    const fdLease = ASSETS.firedome.positions.onSite.seasonLease * firedomeUnitsNeeded;
+
+    for (const key of Object.keys(ASSETS)) {
+      if (key === "firedome") continue;
+      const r = results[key];
+      // "With Firedome" applies the structural protection multiplier to structures lost,
+      // adds Firedome's lease cost, and re-derives damages.
+      const protectedStructures = Math.round(r.structuresLost * (1 - fdCoverFrac * 0.92));
+      const adjustedStructureDmg = protectedStructures * STRUCTURE_LOSS;
+      const adjustedDamages = r.landDamages + adjustedStructureDmg;
+      const withFiredome = {
+        structuresLost: protectedStructures,
+        damages: adjustedDamages,
+        seasonLease: r.seasonLease + fdLease,
+        sortieCost: r.sortieCost,
+        totalSeasonCost: r.seasonLease + fdLease + r.sortieCost + adjustedDamages,
+      };
+      out[key] = {
+        alone: {
+          structuresLost: r.structuresLost,
+          damages: r.damages,
+          seasonLease: r.seasonLease,
+          sortieCost: r.sortieCost,
+          totalSeasonCost: r.totalSeasonCost,
+        },
+        withFiredome,
+        delta: r.totalSeasonCost - withFiredome.totalSeasonCost,  // positive = Firedome saves money
+      };
+    }
+    return out;
+  }, [results, units.firedome.onSiteCoveragePct, firedomeUnitsNeeded]);
+
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)", padding: "16px 4px", maxWidth: 1100, margin: "0 auto" }}>
       <h1 style={{ fontSize: 22, fontWeight: 500, margin: "0 0 4px" }}>Firefighting approaches at the wildland–urban interface</h1>
@@ -953,7 +993,7 @@ function FirefightingSim() {
               {view === "active" && "Hectares actively burning right now (suppressed area drops back to 0)."}
               {view === "burned" && "Total cumulative hectares burned, including low-value wildland."}
               {view === "highValueBurned" && `High-value land burned only — ${Math.round(SETTINGS[settingKey].highValueFrac * 100)}% of footprint at this site (${SETTINGS[settingKey].label.toLowerCase()}).`}
-              {view === "valueLost" && `Dollar value of high-value land burned at $${(SETTINGS[settingKey].landValuePerHa / 1000).toFixed(0)}K/ha. Structure losses tallied separately.`}
+              {view === "valueLost" && `Dollar value of land at risk burned at $${(SETTINGS[settingKey].landValuePerHa / 1000).toFixed(0)}K/ha. Firedome doesn't reduce wildland burn — it protects structures only (see combinations panel below). Structure losses tallied separately.`}
             </div>
           </div>
 
@@ -1070,6 +1110,57 @@ function FirefightingSim() {
             </div>
             <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6, lineHeight: 1.5 }}>
               Drone and aircraft cost curves jump at ~30 mph because they're grounded — they keep paying the lease but stop contributing suppression, so damages dominate. Firedome stays nearly flat: it doesn't fight the fire, it protects what's inside its radius. Trucks degrade gradually but never go to zero.
+            </div>
+          </div>
+
+          {/* Combinations — Firedome as a structural protection layer added to other assets */}
+          <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "12px 14px", marginTop: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Firedome as a structural protection layer</div>
+            <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 10, lineHeight: 1.5 }}>
+              Firedome doesn't fight wildland fire — it protects structures within its coverage radius. The realistic question is whether to layer it on top of another suppression strategy. Each row shows the asset alone vs the asset + Firedome at your current {units.firedome.onSiteCoveragePct}% coverage ({fmt(ASSETS.firedome.positions.onSite.seasonLease * firedomeUnitsNeeded)} added).
+            </div>
+            <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: "0.5px solid var(--color-border-tertiary)", color: "var(--color-text-secondary)", fontWeight: 400 }}>
+                  <th style={{ textAlign: "left", padding: "6px 4px" }}>Strategy</th>
+                  <th style={{ textAlign: "right", padding: "6px 4px" }}>Structures lost</th>
+                  <th style={{ textAlign: "right", padding: "6px 4px" }}>Damages</th>
+                  <th style={{ textAlign: "right", padding: "6px 4px" }}>Season total</th>
+                  <th style={{ textAlign: "right", padding: "6px 4px" }}>Δ vs alone</th>
+                </tr>
+              </thead>
+                {Object.entries(combinations).map(([key, c]) => {
+                  const a = ASSETS[key];
+                  return (
+                    <tbody key={key}>
+                      <tr style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                        <td style={{ padding: "8px 4px" }}>
+                          <span style={{ marginRight: 6 }}>{a.icon}</span>
+                          {a.label} alone
+                        </td>
+                        <td style={{ textAlign: "right", padding: "8px 4px" }}>{c.alone.structuresLost}</td>
+                        <td style={{ textAlign: "right", padding: "8px 4px" }}>{fmt(c.alone.damages)}</td>
+                        <td style={{ textAlign: "right", padding: "8px 4px", fontWeight: 500 }}>{fmt(c.alone.totalSeasonCost)}</td>
+                        <td style={{ textAlign: "right", padding: "8px 4px", color: "var(--color-text-tertiary)" }}>—</td>
+                      </tr>
+                      <tr>
+                        <td style={{ padding: "8px 4px", color: "#3C3489" }}>
+                          <span style={{ marginRight: 6 }}>+🏠</span>
+                          {a.label} + Firedome
+                        </td>
+                        <td style={{ textAlign: "right", padding: "8px 4px", color: "#3C3489" }}>{c.withFiredome.structuresLost}</td>
+                        <td style={{ textAlign: "right", padding: "8px 4px", color: "#3C3489" }}>{fmt(c.withFiredome.damages)}</td>
+                        <td style={{ textAlign: "right", padding: "8px 4px", fontWeight: 500, color: "#3C3489" }}>{fmt(c.withFiredome.totalSeasonCost)}</td>
+                        <td style={{ textAlign: "right", padding: "8px 4px", fontWeight: 500, color: c.delta > 0 ? "#0F6E56" : "#A32D2D" }}>
+                          {c.delta > 0 ? "−" : "+"}{fmt(Math.abs(c.delta))}
+                        </td>
+                      </tr>
+                    </tbody>
+                  );
+                })}
+            </table>
+            <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 10, lineHeight: 1.5 }}>
+              A green delta means Firedome's structure protection saves more than its lease cost. Red means the structures-saved value is below the lease — usually because there were few structures lost in the base scenario or the site has low structure density (wine farms).
             </div>
           </div>
 
