@@ -21,69 +21,41 @@
   }
   * { box-sizing: border-box; }
   html, body {
-    margin: 0;
-    padding: 0;
+    margin: 0; padding: 0;
     font-family: var(--font-sans);
     background: #FFFFFF;
     color: var(--color-text-primary);
     -webkit-font-smoothing: antialiased;
   }
   input[type="range"] {
-    -webkit-appearance: none;
-    appearance: none;
-    height: 4px;
-    background: var(--color-border-tertiary);
-    border-radius: 2px;
-    outline: none;
-    cursor: pointer;
+    -webkit-appearance: none; appearance: none;
+    height: 4px; background: var(--color-border-tertiary);
+    border-radius: 2px; outline: none; cursor: pointer;
   }
   input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 18px; height: 18px;
-    border-radius: 50%;
-    background: #0000E9;
-    cursor: pointer;
-    border: 2px solid white;
+    -webkit-appearance: none; appearance: none;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #0000E9; cursor: pointer; border: 2px solid white;
   }
   input[type="range"]::-moz-range-thumb {
-    width: 18px; height: 18px;
-    border-radius: 50%;
-    background: #0000E9;
-    cursor: pointer;
-    border: 2px solid white;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #0000E9; cursor: pointer; border: 2px solid white;
   }
   select, button {
-    font-family: var(--font-sans);
-    font-size: 13px;
-    padding: 6px 10px;
-    border: 0.5px solid var(--color-border-secondary);
+    font-family: var(--font-sans); font-size: 13px;
+    padding: 6px 10px; border: 0.5px solid var(--color-border-secondary);
     border-radius: var(--border-radius-md);
     background: var(--color-background-primary);
-    color: var(--color-text-primary);
-    cursor: pointer;
+    color: var(--color-text-primary); cursor: pointer;
   }
   button:hover { background: var(--color-background-secondary); }
-
   .ts-header {
     border-bottom: 1px solid var(--color-border-tertiary);
     padding: 16px 24px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+    display: flex; align-items: center; justify-content: space-between;
   }
-  .ts-logo {
-    font-size: 18px;
-    font-weight: 600;
-    letter-spacing: -0.5px;
-    color: #0000E9;
-  }
-  .ts-tag {
-    font-size: 11px;
-    color: var(--color-text-tertiary);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-  }
+  .ts-logo { font-size: 18px; font-weight: 600; letter-spacing: -0.5px; color: #0000E9; }
+  .ts-tag { font-size: 11px; color: var(--color-text-tertiary); text-transform: uppercase; letter-spacing: 1px; }
   #root { padding: 0 24px 32px; }
 </style>
 </head>
@@ -93,13 +65,11 @@
   <div class="ts-tag">Wildfire suppression simulator</div>
 </div>
 <div id="root"></div>
-
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/prop-types@15.7.2/prop-types.min.js"></script>
 <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
 <script type="text/babel" data-type="module">
 const { useState, useMemo } = React;
 const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, Legend, CartesianGrid } = Recharts;
@@ -123,28 +93,30 @@ const ASSETS = {
     label: "Firedome",
     icon: "🏠",
     color: "#7F77DD",
-    unitName: "homes equipped",
-    unitHelp: "Each unit = one structure with a perimeter suppression system. 1,000 ft (305 m) coverage radius. 10 gal payload launched every 10 s = 1 gal/s sustained. Sensor-triggered, autonomous, no wind ceiling.",
+    unitName: "coverage units",
+    unitHelp: "Each unit covers a 1,000 ft (305 m) radius zone — that's ~29 hectares. Number of structures covered depends on density: ~195 in a tight residential community, ~20 at a ski resort, ~4 on a wine farm. 10 gal payload every 10 s. Lease is $10K/month per unit ($50K for the 5-month season).",
     suppressionRate: 0.5,
     rangeM: 305,
+    coverageHa: 29.2,
     payloadGal: 10,
     cycleS: 10,
     windCeilingMph: 999,
     nightCapable: true,
     description: "Property-level autonomous perimeter suppression",
+    pricedBy: "coverage",  // signals UI to show coverage % slider not unit count
     positions: {
       onSite: {
-        label: "Installed at property",
+        label: "Installed in coverage zone",
         travelKm: 0,
         deployMin: 0.3,
-        seasonLease: 8_000,
+        seasonLease: 50_000,        // $10K/month × 5 months
         perDeployment: 0,
       },
       regional: {
         label: "Mobile rapid-deploy unit",
         travelKm: 12,
         deployMin: 6,
-        seasonLease: 35_000,
+        seasonLease: 75_000,        // higher: trailer-mounted with travel
         perDeployment: 1_500,
       },
     },
@@ -295,7 +267,7 @@ const SPEED = {
 // Average loss per hectare burned in a WUI corridor (structures + suppression damages)
 const LOSS_PER_HECTARE = 850_000;
 
-function simulate({ asset, units, windIdx, fuelMoisture, ignitionDistanceKm, structuresAtRisk, settingKey }) {
+function simulate({ asset, units, windIdx, fuelMoisture, ignitionDistanceKm, structuresAtRisk, settingKey, firedomeCoveragePct }) {
   const a = ASSETS[asset];
   const wind = WIND_LEVELS[windIdx];
   const setting = SETTINGS[settingKey];
@@ -385,10 +357,15 @@ function simulate({ asset, units, windIdx, fuelMoisture, ignitionDistanceKm, str
 
   const peakActive = Math.max(...timeline.map(p => p.active));
   const structuresPerHaBurned = 1 / setting.densityHaPerStructure;
-  const structuresLost = Math.min(
+  let structuresLost = Math.min(
     structuresAtRisk,
     Math.round(peakActive * structuresPerHaBurned * 0.4 * (1 + effectiveEmber))
   );
+  // Firedome directly protects covered structures — reduce loss by coverage fraction
+  if (asset === "firedome" && firedomeCoveragePct !== undefined) {
+    const coverFrac = firedomeCoveragePct / 100;
+    structuresLost = Math.round(structuresLost * (1 - coverFrac * 0.92));
+  }
 
   // Costs — seasonal lease replaces capex+opex for this season
   const seasonLease = tiers.reduce((s, t) => s + t.seasonLease, 0);
@@ -584,7 +561,7 @@ const Stat = ({ label, value, sub, color }) => (
 
 function FirefightingSim() {
   const [units, setUnits] = useState({
-    firedome: { onSite: 50, regional: 0 },
+    firedome: { onSiteCoveragePct: 80, regional: 0 },  // % of structures covered + count of mobile units
     drones:   { onSite: 2,  truckMounted: 0, regional: 4 },
     aircraft: { onSite: 0,  regional: 2 },
     trucks:   { onSite: 3,  regional: 4 },
@@ -600,21 +577,37 @@ function FirefightingSim() {
     setUnits(u => ({ ...u, [asset]: { ...u[asset], [posKey]: val } }));
   };
 
+  // Helper: Firedome's user input is "coverage %" — resolve that to a
+  // real unit count given the site density and structures at risk.
+  const firedomeUnitsNeeded = useMemo(() => {
+    const setting = SETTINGS[settingKey];
+    const coverageHa = ASSETS.firedome.coverageHa;             // ~29 ha per unit
+    const structuresPerUnit = coverageHa / setting.densityHaPerStructure;
+    const pct = units.firedome.onSiteCoveragePct / 100;
+    const structsToCover = structuresAtRisk * pct;
+    return Math.ceil(structsToCover / structuresPerUnit);
+  }, [units.firedome.onSiteCoveragePct, settingKey, structuresAtRisk]);
+
   const results = useMemo(() => {
     const out = {};
     for (const key of Object.keys(ASSETS)) {
+      // For Firedome, replace the coverage% input with the resolved unit count.
+      const resolvedUnits = key === "firedome"
+        ? { onSite: firedomeUnitsNeeded, regional: units.firedome.regional }
+        : units[key];
       out[key] = simulate({
         asset: key,
-        units: units[key],
+        units: resolvedUnits,
         windIdx,
         fuelMoisture,
         ignitionDistanceKm: ignitionDist,
         structuresAtRisk,
         settingKey,
+        firedomeCoveragePct: key === "firedome" ? units.firedome.onSiteCoveragePct : undefined,
       });
     }
     return out;
-  }, [units, windIdx, fuelMoisture, ignitionDist, structuresAtRisk, settingKey]);
+  }, [units, firedomeUnitsNeeded, windIdx, fuelMoisture, ignitionDist, structuresAtRisk, settingKey]);
 
   // Combine timelines for chart
   const chartData = useMemo(() => {
@@ -704,7 +697,7 @@ function FirefightingSim() {
           </p>
           {Object.entries(ASSETS).map(([key, a]) => {
             const maxByPos = key === "firedome"
-              ? { onSite: 500, regional: 50 }
+              ? { regional: 50 }
               : key === "trucks" ? { onSite: 15, regional: 20 }
               : key === "drones" ? { onSite: 20, truckMounted: 30, regional: 30 }
               : { onSite: 6, regional: 10 };
@@ -721,23 +714,52 @@ function FirefightingSim() {
                   <span>{a.label}</span>
                   <HelpDot help={a.unitHelp} />
                 </div>
-                {Object.entries(a.positions).map(([posKey, pos]) => (
-                  <div key={posKey} style={{ marginBottom: 6 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
-                      <span style={{ color: "var(--color-text-secondary)" }}>
-                        {pos.label}
-                        <span style={{ color: "var(--color-text-tertiary)", marginLeft: 4 }}>
-                          · {fmt(pos.seasonLease)}/season
+                {Object.entries(a.positions).map(([posKey, pos]) => {
+                  // Special case: Firedome on-site is a coverage % slider
+                  if (key === "firedome" && posKey === "onSite") {
+                    const pct = units.firedome.onSiteCoveragePct;
+                    const totalLease = pos.seasonLease * firedomeUnitsNeeded;
+                    const structsCovered = Math.round(structuresAtRisk * pct / 100);
+                    return (
+                      <div key={posKey} style={{ marginBottom: 6 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+                          <span style={{ color: "var(--color-text-secondary)" }}>
+                            {pos.label}
+                            <span style={{ color: "var(--color-text-tertiary)", marginLeft: 4 }}>
+                              · {fmt(pos.seasonLease)}/unit/season
+                            </span>
+                          </span>
+                          <span style={{ fontWeight: 500 }}>{pct}%</span>
+                        </div>
+                        <input type="range" min={0} max={100} step={5}
+                               value={pct}
+                               onChange={e => setUnit("firedome", "onSiteCoveragePct", Number(e.target.value))}
+                               style={{ width: "100%" }} />
+                        <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 3 }}>
+                          {firedomeUnitsNeeded} unit{firedomeUnitsNeeded === 1 ? "" : "s"} needed · covers ~{structsCovered} structures · {fmt(totalLease)}/season
+                        </div>
+                      </div>
+                    );
+                  }
+                  // Generic count slider
+                  return (
+                    <div key={posKey} style={{ marginBottom: 6 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+                        <span style={{ color: "var(--color-text-secondary)" }}>
+                          {pos.label}
+                          <span style={{ color: "var(--color-text-tertiary)", marginLeft: 4 }}>
+                            · {fmt(pos.seasonLease)}/season
+                          </span>
                         </span>
-                      </span>
-                      <span style={{ fontWeight: 500 }}>{units[key][posKey]}</span>
+                        <span style={{ fontWeight: 500 }}>{units[key][posKey]}</span>
+                      </div>
+                      <input type="range" min={0} max={maxByPos[posKey]} step={1}
+                             value={units[key][posKey]}
+                             onChange={e => setUnit(key, posKey, Number(e.target.value))}
+                             style={{ width: "100%" }} />
                     </div>
-                    <input type="range" min={0} max={maxByPos[posKey]} step={1}
-                           value={units[key][posKey]}
-                           onChange={e => setUnit(key, posKey, Number(e.target.value))}
-                           style={{ width: "100%" }} />
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             );
           })}
